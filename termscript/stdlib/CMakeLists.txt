@@ -47,6 +47,11 @@ set(TS_STDLIB_ISOCLINE_C ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/iso
 set(TS_STDLIB_TOML_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/tomlc99)
 set(TS_STDLIB_ISOCLINE_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/isocline/include)
 
+if(NOT EXISTS "${TS_STDLIB_TOML_C}" OR NOT EXISTS "${TS_STDLIB_ISOCLINE_C}")
+  message(WARNING "Termscript stdlib disabled: vendored tomlc99/isocline sources are missing")
+  return()
+endif()
+
 add_library(termscript_stdlib STATIC
   ${TS_STDLIB_SOURCES}
   ${TS_STDLIB_TOML_C}

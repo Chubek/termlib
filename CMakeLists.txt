@@ -1,6 +1,7 @@
 # Termlib -- PTY/TTY management, Terminfo, session recording, connections,
 # terminal orchestration and the Termscript automation language.
 cmake_minimum_required(VERSION 3.15)
+project(Termlib LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -12,7 +13,7 @@ find_package(Threads REQUIRED)
 # Termscript parser.  There is no fallback: the grammar is the source of
 # truth for the language front end.
 find_program(TERMLIB_PERL perl REQUIRED)
-set(TERMLIB_AUROCKS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/aurocks.pl)
+set(TERMLIB_AUROCKS ${CMAKE_CURRENT_SOURCE_DIR}/scripts/aurocks.pl)
 
 # ── generated Termscript parser ──────────────────────────────────────
 # One translation unit, shared by the standalone runtime below.  The
@@ -128,4 +129,18 @@ install(FILES termscript/termscript.h
 )
 install(FILES termscript/Termscript.g
   DESTINATION ${CMAKE_INSTALL_DATADIR}/termlib
+)
+
+# Project documentation and the 22-chapter manual.
+install(FILES README.md GUIDE.md INSTALL.md
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}
+)
+install(DIRECTORY manual/
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/manual
+  FILES_MATCHING PATTERN "*.md"
+)
+add_custom_target(termlib-manual
+  SOURCES README.md GUIDE.md INSTALL.md
+          ${CMAKE_CURRENT_SOURCE_DIR}/manual/01-overview.md
+          ${CMAKE_CURRENT_SOURCE_DIR}/manual/22-portability-testing.md
 )
