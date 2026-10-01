@@ -18,14 +18,11 @@
  * Status codes are shared numerically with TS_Status (verified with
  * _Static_assert below); only the type names differ.
  */
-#include "termlib.h"
-#include "termscript/termscript.h"
 #include "dt_internal.h"
-/* After dt_internal.h: the stdlib headers pull system headers that
- * would otherwise trip its _POSIX_C_SOURCE definition. */
+#include "termscript/termscript.h"
 #include "termscript/stdlib/ts_stdlib.h"
 
-#if defined(__GNUC__) || defined(__clang__)
+#if !defined(TERMSCRIPT_HAVE_STDLIB) && (defined(__GNUC__) || defined(__clang__))
 extern TS_Status ts_stdlib_register_all (TS_VM *, TS_Error *) __attribute__((weak));
 extern TS_Status ts_stdlib_search_path (TS_VM *, TS_Error *) __attribute__((weak));
 #endif
@@ -721,14 +718,16 @@ dt_termscript_create (DT_Error *error)
   /* The hybrid standard library: native halves register here, .tsc
    * companions resolve through the default search path (plus
    * TERMSCRIPT_PATH at import time). */
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(TERMSCRIPT_HAVE_STDLIB)
+  if (ts_stdlib_register_all (vm->tsvm, &tserr) != TS_OK ||
+      ts_stdlib_search_path (vm->tsvm, &tserr) != TS_OK)
+#elif defined(__GNUC__) || defined(__clang__)
   if ((ts_stdlib_register_all &&
        ts_stdlib_register_all (vm->tsvm, &tserr) != TS_OK) ||
       (ts_stdlib_search_path &&
        ts_stdlib_search_path (vm->tsvm, &tserr) != TS_OK))
 #else
-  if (ts_stdlib_register_all (vm->tsvm, &tserr) != TS_OK ||
-      ts_stdlib_search_path (vm->tsvm, &tserr) != TS_OK)
+  if (false)
 #endif
     {
       ts_vm_free (vm->tsvm);

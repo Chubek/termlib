@@ -25,8 +25,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 #include "termlib.h"
+#include "termscript_driver_config.h"
 
 #define TS_DRIVER_MAX_STDIN (1u << 20)
 
@@ -237,15 +239,19 @@ build_exe (const char *source, bool from_stdin, const char *out_path,
   DT_TermVM *vm;
   DT_Error err;
   const char *code;
-  char tmp[] = "/tmp/termscriptXXXXXX.c";
+  char *tmp;
   int fd;
   FILE *f;
   int rc;
+  const char *tmpdir = getenv ("TMPDIR");
+  if (!tmpdir || !*tmpdir) tmpdir = "/tmp";
+  if (asprintf (&tmp, "%s/termscriptXXXXXX.c", tmpdir) < 0) return 1;
   dt_error_clear (&err);
   vm = dt_termscript_create (&err);
   if (!vm)
     {
       fprintf (stderr, "termscript: %s\n", err.message);
+      free (tmp);
       return 1;
     }
   if (from_stdin)
@@ -255,6 +261,7 @@ build_exe (const char *source, bool from_stdin, const char *out_path,
         {
           fprintf (stderr, "termscript: cannot read stdin\n");
           dt_termscript_free (vm);
+          free (tmp);
           return 1;
         }
       code = dt_termscript_compile_to_c (vm, text, "termscript_unit",
@@ -263,51 +270,15 @@ build_exe (const char *source, bool from_stdin, const char *out_path,
     }
   else
     {
-      /* Reuse run_file text? compile_to_c needs source text; read it. */
-      FILE *sf = fopen (source, "rb");
-      char *text = NULL;
-      size_t cap = 8192, len = 0, r;
-      if (!sf)
+      char *text = read_file_all (source);
+      if (!text)
         {
           fprintf (stderr, "termscript: cannot open '%s': %s\n", source,
                    strerror (errno));
           dt_termscript_free (vm);
+          free (tmp);
           return 1;
         }
-      text = malloc (cap);
-      if (!text)
-        {
-          fclose (sf);
-          dt_termscript_free (vm);
-          return 1;
-        }
-      while ((r = fread (text + len, 1, cap - len - 1, sf)) > 0)
-        {
-          char *nb;
-          len += r;
-          if (len + 1 < cap)
-            continue;
-          if (cap >= TS_DRIVER_MAX_STDIN)
-            {
-              fprintf (stderr, "termscript: script too large\n");
-              free (text);
-              fclose (sf);
-              dt_termscript_free (vm);
-              return 1;
-            }
-          cap *= 2;
-          nb = realloc (text, cap);
-          if (!nb)
-            {
-              free (text);
-              fclose (sf);
-              dt_termscript_free (vm);
-              return 1;
-            }
-          text = nb;
-        }
-      fclose (sf);
-      text[len] = '\0';
       code = dt_termscript_compile_to_c (vm, text, "termscript_unit",
                                          &err);
       free (text);
@@ -316,6 +287,7 @@ build_exe (const char *source, bool from_stdin, const char *out_path,
     {
       fprintf (stderr, "termscript: %s\n", err.message);
       dt_termscript_free (vm);
+      free (tmp);
       return 1;
     }
   fd = mkstemps (tmp, 2);
@@ -324,6 +296,7 @@ build_exe (const char *source, bool from_stdin, const char *out_path,
       fprintf (stderr, "termscript: cannot create temp file: %s\n",
                strerror (errno));
       dt_termscript_free (vm);
+      free (tmp);
       return 1;
     }
   f = fdopen (fd, "w");
@@ -332,22 +305,45 @@ build_exe (const char *source, bool from_stdin, const char *out_path,
       close (fd);
       unlink (tmp);
       dt_termscript_free (vm);
+      free (tmp);
       return 1;
     }
-  fputs (code, f);
-  fclose (f);
+  rc = fputs (code, f) == EOF;
+  if (fclose (f)) rc = 1;
   dt_termscript_free (vm);
+  if (rc) { unlink (tmp); free (tmp); fprintf (stderr, "termscript: cannot write generated C\n"); return 1; }
   {
-    char cmd[4096];
-    /* Native modules link statically: the stdlib archive carries every
-     * std.* native module (termscript-side companions are already
-     * compiled into the unit, so no .tsc lookup happens at run time). */
-    snprintf (cmd, sizeof cmd, "%s %s -o '%s' '%s' -ltermscript -ltermscript_stdlib -ltermscript_standalone -ltermlib",
-              cc ? cc : "cc", link_static ? "-static" : "", out_path,
-              tmp);
-    rc = system (cmd);
+    const char *args[256];
+    char *include = NULL, *libdir = NULL;
+    size_t count = 0, i;
+    bool build_tree = access (ts_driver_build_libs[0], R_OK) == 0;
+    const char *const *libs = build_tree ? ts_driver_build_libs : ts_driver_install_libs;
+    const char *const *flags = link_static ? ts_driver_static_flags : ts_driver_native_flags;
+    const char *compiler = cc ? cc : getenv ("CC");
+    pid_t pid;
+    if (!compiler || !*compiler) compiler = "cc";
+    if (asprintf (&include, "-I%s", build_tree ? TS_DRIVER_BUILD_INCLUDE : TS_DRIVER_INSTALL_INCLUDE) < 0 ||
+        asprintf (&libdir, "-L%s", TS_DRIVER_INSTALL_LIBDIR) < 0)
+      { free (include); free (libdir); unlink (tmp); free (tmp); return 1; }
+    args[count++] = compiler; args[count++] = "-std=c11";
+    if (link_static) args[count++] = "-static";
+    args[count++] = include;
+    /* DT headers are installed under include/termlib; emitted C includes
+     * termlib.h while standalone/std headers use their namespaced path. */
+    char *dtinclude = NULL;
+    if (!build_tree && asprintf (&dtinclude, "-I%s/termlib", TS_DRIVER_INSTALL_INCLUDE) >= 0) args[count++] = dtinclude;
+    args[count++] = libdir; args[count++] = "-o"; args[count++] = out_path; args[count++] = tmp;
+    for (i = 0; libs[i] && count + 1 < sizeof args / sizeof args[0]; i++) args[count++] = libs[i];
+    for (i = 0; flags[i] && count + 1 < sizeof args / sizeof args[0]; i++) args[count++] = flags[i];
+    args[count] = NULL;
+    pid = fork ();
+    if (!pid) { execvp (compiler, (char *const *) args); perror (compiler); _exit (127); }
+    if (pid < 0) rc = -1;
+    else { pid_t waited; do { waited = waitpid (pid, &rc, 0); } while (waited < 0 && errno == EINTR); if (waited < 0) rc = -1; }
+    free (include); free (dtinclude); free (libdir);
   }
   unlink (tmp);
+  free (tmp);
   if (rc != 0)
     {
       fprintf (stderr, "termscript: link failed (rc=%d)\n", rc);

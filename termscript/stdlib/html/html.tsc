@@ -1,0 +1,2 @@
+# HTML5 parsing and terminal rendering. Node handles retain their documents.
+const html_m = G:load "std.html" or G:die "std.html missing";

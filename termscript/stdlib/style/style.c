@@ -6,6 +6,7 @@
 #include "style/style.h"
 
 #include "common/ts_std_common.h"
+#include "common/text.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -31,6 +32,8 @@ s_sgr (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
           ts_sbuf_free (&b);
           return TS_ERR_INVAL;
         }
+      if (code < 0 || code > 65535)
+        { ts_sbuf_free (&b); return ts_std_inval (error, "sgr: code must be 0..65535"); }
       if (i && ts_sbuf_ch (&b, ';') != 0)
         goto oom;
       if (ts_sbuf_printf (&b, "%lld", (long long) code) != 0)
@@ -84,29 +87,11 @@ s_wrap (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
   return TS_OK;
 }
 
-/* Visible length: skip ESC[...m / ESC…letter and single ESC + char. */
+/* Locale-independent terminal-column width, including OSC/ST hygiene. */
 static size_t
 vis_len (const char *s)
 {
-  size_t n = 0;
-  for (; *s; s++)
-    {
-      if ((unsigned char) *s == 0x1B && s[1])
-        {
-          s++;
-          if (*s == '[')
-            {
-              s++;
-              while (*s && !(*s >= '@' && *s <= '~'))
-                s++;
-              if (!*s)
-                break;
-            }
-        }
-      else
-        n++;
-    }
-  return n;
+  return ts_text_width (s, strlen (s));
 }
 
 static TS_Status
@@ -122,27 +107,8 @@ s_strip (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
   if (ts_std_str (&argv[0], &s, error, "strip") != TS_OK)
     return TS_ERR_INVAL;
   ts_sbuf_init (&b);
-  for (; *s; s++)
-    {
-      if ((unsigned char) *s == 0x1B && s[1])
-        {
-          s++;
-          if (*s == '[')
-            {
-              s++;
-              while (s[0] && !(s[0] >= '@' && s[0] <= '~'))
-                s++;
-              if (!s[0])
-                break;
-            }
-        }
-      else if (ts_sbuf_ch (&b, *s) != 0)
-        {
-          ts_sbuf_free (&b);
-          ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
-          return TS_ERR_NOMEM;
-        }
-    }
+  if (ts_text_strip (&b, s, strlen (s)))
+    { ts_sbuf_free (&b); return ts_std_oom (error); }
   out = ts_sbuf_take (&b);
   ts_value_free (ret);
   ret->type = TS_STRING;

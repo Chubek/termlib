@@ -65,7 +65,7 @@ extern "C"
 #define TS_VERSION_PATCH 0
 
 #define TS_ERROR_MSG_SIZE 256
-#define TS_MAX_MODULES 64
+#define TS_MAX_MODULES 128
 
 /* Status codes.  Numeric values match Termlib DT_Status on purpose. */
 typedef enum
@@ -76,6 +76,10 @@ typedef enum
   TS_ERR_SYSTEM = 7,    /* OS failure (e.g. unreadable script file). */
   TS_ERR_NOTFOUND = 4,  /* Unbound variable/module/function. */
   TS_ERR_PARSE = 5,     /* Syntax error or script-level arithmetic fault. */
+  TS_ERR_UNSUPPORTED = 6,
+  TS_ERR_EOF = 8,
+  TS_ERR_TIMEOUT = 9,
+  TS_ERR_WOULD_BLOCK = 10,
   TS_ERR_CANCELLED = 12,/* G:die halt. */
   TS_ERR_LIMIT = 14     /* Step budget, size caps, registry full. */
 } TS_Status;

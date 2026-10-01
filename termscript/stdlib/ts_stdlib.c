@@ -9,22 +9,30 @@
 static const TS_Module *const stdlib_modules[] = {
   &ts_std_array_module,
   &ts_std_autocomp_module,
+  &ts_std_baudrate_module,
+  &ts_std_bidi_module,
   &ts_std_buffer_module,
+  &ts_std_cell_module,
   &ts_std_codec_module,
   &ts_std_color_module,
+  &ts_std_css_module,
   &ts_std_csv_module,
   &ts_std_draw_module,
   &ts_std_edit_history_module,
   &ts_std_env_module,
   &ts_std_exec_module,
   &ts_std_expect_module,
+  &ts_std_font_module,
+  &ts_std_font_discovery_module,
   &ts_std_fsm_module,
   &ts_std_glob_module,
+  &ts_std_html_module,
   &ts_std_http_module,
   &ts_std_io_module,
   &ts_std_ipc_module,
   &ts_std_json_module,
   &ts_std_key_module,
+  &ts_std_layout_module,
   &ts_std_list_module,
   &ts_std_log_module,
   &ts_std_map_module,
@@ -34,6 +42,7 @@ static const TS_Module *const stdlib_modules[] = {
   &ts_std_pipe_module,
   &ts_std_pty_module,
   &ts_std_prompt_module,
+  &ts_std_prompt_string_module,
   &ts_std_readline_module,
   &ts_std_regex_module,
   &ts_std_rules_module,
@@ -43,20 +52,40 @@ static const TS_Module *const stdlib_modules[] = {
   &ts_std_socket_module,
   &ts_std_stream_module,
   &ts_std_style_module,
+  &ts_std_stylesheet_module,
   &ts_std_syntax_module,
   &ts_std_table_module,
   &ts_std_termcap_module,
   &ts_std_terminfo_module,
+  &ts_std_terminal_module,
+  &ts_std_termios_module,
   &ts_std_test_module,
   &ts_std_text_search_module,
   &ts_std_theme_module,
   &ts_std_toml_module,
+  &ts_std_tui_module,
+  &ts_std_utf8_module,
   &ts_std_verbatim_module,
   &ts_std_vterm_module,
   &ts_std_widget_module,
   &ts_std_word_motion_module,
   &ts_std_yaml_module,
 };
+
+_Static_assert (sizeof stdlib_modules / sizeof stdlib_modules[0] == TS_STDLIB_NMODULES,
+                "stdlib module count must match registry");
+
+size_t
+ts_stdlib_module_count (void)
+{
+  return sizeof stdlib_modules / sizeof stdlib_modules[0];
+}
+
+const TS_Module *
+ts_stdlib_module_at (size_t index)
+{
+  return index < ts_stdlib_module_count () ? stdlib_modules[index] : NULL;
+}
 
 TS_Status
 ts_stdlib_register_all (TS_VM *vm, TS_Error *error)

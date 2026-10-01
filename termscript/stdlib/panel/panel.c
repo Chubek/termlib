@@ -6,6 +6,7 @@
 #include "panel/panel.h"
 
 #include "common/ts_std_common.h"
+#include "common/text.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +20,7 @@ widest (const char *body)
   for (;;)
     {
       const char *nl = strchr (p, '\n');
-      size_t n = nl ? (size_t) (nl - p) : strlen (p);
+      size_t n = ts_text_width (p, nl ? (size_t) (nl - p) : strlen (p));
       if (n > best)
         best = n;
       if (!nl)
@@ -74,6 +75,8 @@ p_box (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
   if (argc == 3 && ts_std_int (&argv[2], &width, error, "box") != TS_OK)
     return TS_ERR_INVAL;
   w = widest (body);
+  size_t title_width = ts_text_width (title, strlen (title));
+  if (title_width + 2 > w && title[0]) w = title_width + 2;
   if (width > 0 && (size_t) width > w)
     w = (size_t) width;
   if (w > 500)
@@ -87,7 +90,7 @@ p_box (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       if (ts_sbuf_printf (&b, "+- %s ", title) != 0)
         goto oom;
       {
-        size_t used = strlen (title) + 4;
+        size_t used = title_width + 4;
         size_t i;
         for (i = used; i + 1 < w + 4; i++)
           if (ts_sbuf_ch (&b, '-') != 0)
@@ -106,7 +109,7 @@ p_box (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       if (ts_sbuf_str (&b, "| ") != 0 ||
           ts_sbuf_put (&b, p, n) != 0)
         goto oom;
-      for (i = n; i < w; i++)
+      for (i = ts_text_width (p, n); i < w; i++)
         if (ts_sbuf_ch (&b, ' ') != 0)
           goto oom;
       if (ts_sbuf_str (&b, " |\n") != 0)
@@ -162,7 +165,7 @@ p_columns (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       bool lmore = lnl != NULL, rmore = rnl != NULL;
       if (ts_sbuf_put (&b, lp, ln) != 0)
         goto oom;
-      for (i = ln; i < lw; i++)
+      for (i = ts_text_width (lp, ln); i < lw; i++)
         if (ts_sbuf_ch (&b, ' ') != 0)
           goto oom;
       if (rmore || rn)

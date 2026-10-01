@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: termscript_stdlib
+Description: Termscript Unicode, terminal, TUI, HTML/CSS and native standard library
+Version: 0.1.0
+Requires: libutf8proc fribidi fontconfig freetype2 harfbuzz
+Libs: -L${libdir} -ltermscript_stdlib -ltermscript_standalone -llexbor_static -lm -pthread
+Cflags: -I${includedir}

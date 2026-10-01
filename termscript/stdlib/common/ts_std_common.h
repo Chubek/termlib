@@ -44,8 +44,8 @@ int ts_sbuf_put (ts_sbuf_t *b, const char *s, size_t n);
 int ts_sbuf_str (ts_sbuf_t *b, const char *s);
 int ts_sbuf_ch (ts_sbuf_t *b, char c);
 int ts_sbuf_printf (ts_sbuf_t *b, const char *fmt, ...);
-/* Release a NUL-terminated copy (caller frees); never NULL (OOM
- * yields an empty string).  Resets the buffer. */
+/* Transfer a NUL-terminated buffer (caller frees), NULL on allocation
+ * failure. Resets the buffer. */
 char *ts_sbuf_take (ts_sbuf_t *b);
 
 /* ---------------- argument getters (borrowed) ---------------- */
@@ -67,6 +67,10 @@ TS_Status ts_std_ret_strn (TS_Value *ret, const char *s, size_t n,
 void ts_std_ret_int (TS_Value *ret, int64_t i);
 void ts_std_ret_bool (TS_Value *ret, bool b);
 void ts_std_ret_nil (TS_Value *ret);
+TS_Status ts_std_ret_sbuf (TS_Value *ret, ts_sbuf_t *b, TS_Error *error);
+TS_Status ts_std_oom (TS_Error *error);
+TS_Status ts_std_inval (TS_Error *error, const char *message);
+TS_Status ts_std_system (TS_Error *error, const char *operation);
 
 /* Arity in [lo, hi]; TS_ERR_INVAL naming the function otherwise. */
 TS_Status ts_std_argc (TS_VM *vm, size_t argc, size_t lo, size_t hi,

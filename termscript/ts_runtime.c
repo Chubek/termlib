@@ -56,6 +56,10 @@ ts_status_string (TS_Status status)
     case TS_ERR_SYSTEM: return "SYSTEM";
     case TS_ERR_NOTFOUND: return "NOT_FOUND";
     case TS_ERR_PARSE: return "PARSE";
+    case TS_ERR_UNSUPPORTED: return "UNSUPPORTED";
+    case TS_ERR_EOF: return "EOF";
+    case TS_ERR_TIMEOUT: return "TIMEOUT";
+    case TS_ERR_WOULD_BLOCK: return "WOULD_BLOCK";
     case TS_ERR_CANCELLED: return "CANCELLED";
     case TS_ERR_LIMIT: return "LIMIT";
     default: return "UNKNOWN";
@@ -459,19 +463,31 @@ term_arith (TS_VM *vm, const TS_Value *argv, size_t argc,
       ts_error_set (error, TS_ERR_INVAL, 0, 0, "ints required");
       return TS_ERR_INVAL;
     }
-  ret->type = TS_INT;
+  int64_t a = argv[0].as.integer, b = argv[1].as.integer, result = 0;
+  bool overflow = false;
   switch (op)
     {
-    case '+': ret->as.integer = argv[0].as.integer + argv[1].as.integer; break;
-    case '-': ret->as.integer = argv[0].as.integer - argv[1].as.integer; break;
-    case '*': ret->as.integer = argv[0].as.integer * argv[1].as.integer; break;
+    case '+':
+      overflow = (b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b);
+      if (!overflow) result = a + b;
+      break;
+    case '-':
+      overflow = (b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b);
+      if (!overflow) result = a - b;
+      break;
+    case '*':
+      if (a > 0) overflow = b > 0 ? a > INT64_MAX / b : b < INT64_MIN / a;
+      else if (a < 0) overflow = b > 0 ? a < INT64_MIN / b : b < 0 && a < INT64_MAX / b;
+      if (!overflow) result = a * b;
+      break;
     case '/':
       if (argv[1].as.integer == 0)
         {
           ts_error_set (error, TS_ERR_PARSE, 0, 0, "division by zero");
           return TS_ERR_PARSE;
         }
-      ret->as.integer = argv[0].as.integer / argv[1].as.integer;
+      overflow = a == INT64_MIN && b == -1;
+      if (!overflow) result = a / b;
       break;
     case 'm':
       if (argv[1].as.integer == 0)
@@ -479,12 +495,15 @@ term_arith (TS_VM *vm, const TS_Value *argv, size_t argc,
           ts_error_set (error, TS_ERR_PARSE, 0, 0, "modulo by zero");
           return TS_ERR_PARSE;
         }
-      ret->as.integer = argv[0].as.integer % argv[1].as.integer;
+      result = a == INT64_MIN && b == -1 ? 0 : a % b;
       break;
     default:
       ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad op");
       return TS_ERR_INVAL;
     }
+  if (overflow)
+    { ts_error_set (error, TS_ERR_PARSE, 0, 0, "integer overflow"); return TS_ERR_PARSE; }
+  ts_value_make_int (ret, result);
   return TS_OK;
 }
 
@@ -826,6 +845,118 @@ typedef struct dt_node
   char *string;
   bool boolean;
 } ts_node_t;
+
+/* Track front-end scratch separately from the returned AST. Backtracking
+ * abandons tokens and partial trees; a completed parse retains only reachable
+ * AST allocations. The allocator context is thread-local so AST disposal on
+ * another VM never touches the active parser's scratch storage. */
+enum { TS_PARSE_BUCKETS = 16384 };
+typedef struct ts_parse_allocation
+{
+  void *pointer;
+  bool retained;
+  struct ts_parse_allocation *next;
+} ts_parse_allocation;
+typedef struct { ts_parse_allocation *buckets[TS_PARSE_BUCKETS]; } ts_parse_arena;
+static _Thread_local ts_parse_arena *ts_parse_memory;
+void ts_oom (void);
+
+static ts_parse_allocation **
+ts_parse_slot (uintptr_t key)
+{
+  size_t bucket = ((key >> 4) ^ (key >> 18)) & (TS_PARSE_BUCKETS - 1);
+  ts_parse_allocation **slot = &ts_parse_memory->buckets[bucket];
+  while (*slot && (uintptr_t) (*slot)->pointer != key) slot = &(*slot)->next;
+  return slot;
+}
+
+void *
+ts_parse_alloc (size_t size)
+{
+  void *p = malloc (size);
+  ts_parse_allocation *entry;
+  if (!ts_parse_memory) return p;
+  if (!p) { ts_oom (); return NULL; }
+  entry = malloc (sizeof *entry);
+  if (!entry) { free (p); ts_oom (); return NULL; }
+  ts_parse_allocation **slot = ts_parse_slot ((uintptr_t) p);
+  entry->pointer = p; entry->retained = false; entry->next = NULL;
+  *slot = entry;
+  return p;
+}
+
+void
+ts_parse_free (void *p)
+{
+  if (p && ts_parse_memory)
+    {
+      ts_parse_allocation **slot = ts_parse_slot ((uintptr_t) p), *entry = *slot;
+      if (entry) { *slot = entry->next; free (entry); }
+    }
+  free (p);
+}
+
+static void *
+ts_parse_calloc (size_t count, size_t size)
+{
+  if (!ts_parse_memory) return calloc (count, size);
+  if (count && size > SIZE_MAX / count) { ts_oom (); return NULL; }
+  void *p = ts_parse_alloc (count * size);
+  if (p) memset (p, 0, count * size);
+  return p;
+}
+
+static void *
+ts_parse_realloc (void *p, size_t size)
+{
+  if (!ts_parse_memory) return realloc (p, size);
+  if (!p) return ts_parse_alloc (size);
+  if (!size) { ts_parse_free (p); return NULL; }
+  ts_parse_allocation **slot = ts_parse_slot ((uintptr_t) p), *entry = *slot;
+  void *next = realloc (p, size);
+  if (!next) { ts_oom (); return NULL; }
+  if (entry)
+    {
+      *slot = entry->next;
+      entry->pointer = next;
+      slot = ts_parse_slot ((uintptr_t) next);
+      entry->next = NULL; *slot = entry;
+    }
+  return next;
+}
+
+static bool
+ts_parse_keep (const void *p)
+{
+  if (!p) return false;
+  ts_parse_allocation *entry = *ts_parse_slot ((uintptr_t) p);
+  if (!entry || entry->retained) return false;
+  entry->retained = true;
+  return true;
+}
+
+static void
+ts_parse_keep_tree (const ts_node_t *n)
+{
+  for (; n; n = n->next)
+    {
+      if (!ts_parse_keep (n)) continue;
+      ts_parse_keep (n->name); ts_parse_keep (n->module);
+      ts_parse_keep (n->func); ts_parse_keep (n->string); ts_parse_keep (n->args);
+      for (size_t i = 0; i < n->nargs; i++)
+        { ts_parse_keep (n->args[i].name); ts_parse_keep (n->args[i].string); }
+      ts_parse_keep_tree (n->first); ts_parse_keep_tree (n->cond);
+      ts_parse_keep_tree (n->otherwise); ts_parse_keep_tree (n->lhs);
+      if (n->kind != N_SEQ) ts_parse_keep_tree (n->rhs);
+    }
+}
+
+/* Only the front end uses these hooks; published AST storage is ordinary
+ * heap storage and continues to use the existing ownership/destructor API. */
+#define malloc ts_parse_alloc
+#define calloc ts_parse_calloc
+#define realloc ts_parse_realloc
+#define free ts_parse_free
 
 static void
 ts_node_free (ts_node_t *n)
@@ -1350,7 +1481,26 @@ ts_mk_string (char *tok, unsigned line)
         case 'r': out[o++] = '\r'; break;
         case '"': out[o++] = '"'; break;
         case '\\': out[o++] = '\\'; break;
-        case '0': out[o++] = '\0'; break;
+        case 'e': out[o++] = '\033'; break;
+        case 'a': out[o++] = '\a'; break;
+        case 'b': out[o++] = '\b'; break;
+        case 'f': out[o++] = '\f'; break;
+        case 'v': out[o++] = '\v'; break;
+        case 'x':
+          {
+            unsigned value = 0, j;
+            for (j = 0; j < 2; j++)
+              {
+                unsigned char d = (unsigned char) tok[i++];
+                int digit = d >= '0' && d <= '9' ? d - '0' : d >= 'a' && d <= 'f' ? d - 'a' + 10 : d >= 'A' && d <= 'F' ? d - 'A' + 10 : -1;
+                if (i > len - 1 || digit < 0) { free (out); free (tok); return NULL; }
+                value = value * 16 + (unsigned) digit;
+              }
+            if (!value) { free (out); free (tok); return NULL; }
+            out[o++] = (char) value;
+            break;
+          }
+        case '0': free (out); free (tok); return NULL; /* Strings cannot hold NUL. */
         default:
           free (out);
           free (tok);
@@ -1589,10 +1739,28 @@ ts_try_parse (const char *input, bool *oom)
 {
   void *r;
   pthread_mutex_lock (&ts_parse_mutex);
+  ts_parse_arena *arena = calloc (1, sizeof *arena);
+  if (!arena)
+    { if (oom) *oom = true; pthread_mutex_unlock (&ts_parse_mutex); return NULL; }
+  ts_parse_memory = arena;
   ts_pctx.start = input;
   ts_pctx.end = input + strlen (input);
   ts_pctx.oom = false;
   r = ts_gram_parse (input);
+  if (ts_pctx.oom) r = NULL;
+  if (r) ts_parse_keep_tree (r);
+  ts_parse_memory = NULL;
+  for (size_t i = 0; i < TS_PARSE_BUCKETS; i++)
+    {
+      ts_parse_allocation *entry = arena->buckets[i];
+      while (entry)
+        {
+          ts_parse_allocation *next = entry->next;
+          if (!entry->retained) free (entry->pointer);
+          free (entry); entry = next;
+        }
+    }
+  free (arena);
   if (oom)
     *oom = ts_pctx.oom;
   ts_pctx.start = NULL;
@@ -1672,6 +1840,10 @@ ts_parse_program (const char *source, ts_node_t **out, TS_Error *error)
               "termscript syntax error");
   return TS_ERR_PARSE;
 }
+#undef malloc
+#undef calloc
+#undef realloc
+#undef free
 /* ---------------- interpreter ---------------- */
 
 static ts_var_t *

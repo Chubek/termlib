@@ -42,9 +42,8 @@
  * - Only the LAST matched terminal's text is visible (`token`); earlier
  *   terminals in the same alternative are inaccessible.  Every action
  *   consumes `token` exactly once: a ts_* helper adopts it, or the
- *   action frees it.  Unreachable earlier token buffers are an
- *   aurocks-runtime characteristic (each terminal match mallocs); see
- *   "Memory" below.
+ *   action frees it. Unreachable earlier token buffers are collected by
+ *   the per-parse scratch allocator; see "Memory" below.
  * - `$TOKEN`/`token` must not be referenced in left-recursive tail
  *   actions (only `tail_token` exists there); tail actions below only
  *   use v1/v2/v3.
@@ -54,12 +53,11 @@
  *   generator before parsing rules).
  *
  * Memory: successful parses adopt every AST node and every adopted
- * token into the returned tree (freed with dt_node_free).  Non-adopted
- * terminal buffers from successful alternatives, and partial trees from
- * abandoned alternatives on parse failure, are released only with the
- * process; this mirrors the aurocks runtime, which mallocs per terminal
- * match without a free path on backtracking.  Failed parses therefore
- * cost bounded scratch memory proportional to the input scanned.
+ * token into the returned tree (freed with dt_node_free). The runtime
+ * tracks generated-parser and constructor allocations per parse. After
+ * parsing, only reachable AST storage is retained; non-adopted terminal
+ * buffers and abandoned partial trees are released on both success and
+ * failure. The hooks are scoped to the generated parser translation unit.
  *
  * Line numbers: actions capture ts_curline(attempt.s) (`attempt` is in
  * scope in both seed and tail actions).  Positions rewind over trailing
@@ -70,6 +68,11 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+
+void *ts_parse_alloc (size_t size);
+void ts_parse_free (void *pointer);
+#define malloc ts_parse_alloc
+#define free ts_parse_free
 
 /* AST constructors, argument accumulators and parse helpers, all defined
  * (non-static) in domlibs/termlib/termscript/ts_runtime.c.  All take/return

@@ -12,9 +12,7 @@
 # Third-party code compiled in:
 #   third_party/tomlc99/toml.c      TOML parser behind std.toml
 #   third_party/isocline/src/isocline.c  line editing behind std.readline
-#   third_party/stb/stb_ds.h        (header-only, used by nothing at
-#                                   present — reserved for future maps;
-#                                   containers come from Q-generated gen/)
+#   third_party/lexbor              HTML, CSS parsing and selector matching
 
 option(DOMWEAVE_BUILD_TERMSCRIPT_STDLIB "Build the Termscript stdlib" ON)
 
@@ -23,10 +21,10 @@ if(NOT DOMWEAVE_BUILD_TERMSCRIPT_STDLIB)
 endif()
 
 set(TS_STDLIB_MODULES
-  array autocomp buffer codec color csv draw edit_history env exec expect fsm glob http io
-  ipc json key list log map menu notify panel pipe pty prompt readline regex rules
+  array autocomp baudrate bidi buffer cell codec color css csv draw edit_history env exec expect font fsm glob html http io
+  ipc json key layout list log map menu notify panel pipe pty prompt prompt_string readline regex rules
   sched screen signal socket stream style syntax table termcap terminfo test text_search theme
-  toml verbatim vterm widget word_motion yaml
+  terminal termios toml tui utf8 verbatim vterm widget word_motion yaml
 )
 
 set(TS_STDLIB_SOURCES
@@ -34,6 +32,9 @@ set(TS_STDLIB_SOURCES
   common/values.c
   common/list_store.c
   common/dom.c
+  common/text.c
+  common/grid.c
+  common/html.c
   ts_stdlib.c
 )
 foreach (m IN LISTS TS_STDLIB_MODULES)
@@ -48,9 +49,22 @@ set(TS_STDLIB_TOML_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/tomlc99)
 set(TS_STDLIB_ISOCLINE_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/isocline/include)
 
 if(NOT EXISTS "${TS_STDLIB_TOML_C}" OR NOT EXISTS "${TS_STDLIB_ISOCLINE_C}")
-  message(WARNING "Termscript stdlib disabled: vendored tomlc99/isocline sources are missing")
-  return()
+  message(FATAL_ERROR "Termscript stdlib requires the bundled tomlc99/isocline sources")
 endif()
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(TS_UTF8PROC REQUIRED IMPORTED_TARGET libutf8proc)
+pkg_check_modules(TS_FRIBIDI REQUIRED IMPORTED_TARGET fribidi)
+pkg_check_modules(TS_FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+pkg_check_modules(TS_FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+pkg_check_modules(TS_HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
+
+set(LEXBOR_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(LEXBOR_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(LEXBOR_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LEXBOR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LEXBOR_INSTALL_HEADERS OFF CACHE BOOL "" FORCE)
+add_subdirectory(../../third_party/lexbor ${CMAKE_CURRENT_BINARY_DIR}/lexbor)
 
 add_library(termscript_stdlib STATIC
   ${TS_STDLIB_SOURCES}
@@ -67,9 +81,45 @@ target_include_directories(termscript_stdlib PUBLIC
 target_include_directories(termscript_stdlib PRIVATE
   ${TS_STDLIB_TOML_INC}
   ${TS_STDLIB_ISOCLINE_INC}
+  ${CMAKE_CURRENT_BINARY_DIR}
 )
+# Reuse isocline's MIT-licensed CSS color-name data, rather than maintaining
+# a second palette. Only RGB entries (standard CSS names) are selected.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/isocline/src/bbcode_colors.c"
+  TS_CSS_COLORS REGEX "IC_RGB\\(0x[0-9a-f]+\\)")
+set(TS_CSS_COLOR_TABLE "/* Generated from isocline bbcode_colors.c (MIT, Daan Leijen). */\n")
+foreach(entry IN LISTS TS_CSS_COLORS)
+  string(REGEX REPLACE "IC_RGB\\((0x[0-9a-f]+)\\)" "\\1" entry "${entry}")
+  string(APPEND TS_CSS_COLOR_TABLE "${entry}\n")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/css_named_colors.h" "${TS_CSS_COLOR_TABLE}")
 target_link_libraries(termscript_stdlib PUBLIC termscript_standalone)
 target_link_libraries(termscript_stdlib PRIVATE Threads::Threads)
+target_link_libraries(termscript_stdlib PRIVATE lexbor_static
+  PkgConfig::TS_UTF8PROC PkgConfig::TS_FRIBIDI PkgConfig::TS_FONTCONFIG
+  PkgConfig::TS_FREETYPE PkgConfig::TS_HARFBUZZ m)
+
+# The driver emits and links C in a separate compiler process. Export the
+# native dependency closure for that process and for installed pkg-config.
+set(TS_DRIVER_NATIVE_FLAGS "-pthread")
+set(TS_DRIVER_STATIC_FLAGS "-pthread")
+foreach(pkg IN ITEMS TS_UTF8PROC TS_FRIBIDI TS_FONTCONFIG TS_FREETYPE TS_HARFBUZZ)
+  foreach(dir IN LISTS ${pkg}_LIBRARY_DIRS)
+    list(APPEND TS_DRIVER_NATIVE_FLAGS "-L${dir}")
+  endforeach()
+  foreach(lib IN LISTS ${pkg}_LIBRARIES)
+    list(APPEND TS_DRIVER_NATIVE_FLAGS "-l${lib}")
+  endforeach()
+  list(APPEND TS_DRIVER_NATIVE_FLAGS ${${pkg}_LDFLAGS_OTHER})
+  list(APPEND TS_DRIVER_STATIC_FLAGS ${${pkg}_STATIC_LDFLAGS})
+endforeach()
+list(APPEND TS_DRIVER_NATIVE_FLAGS -lm)
+set(TERMSCRIPT_NATIVE_FLAGS ${TS_DRIVER_NATIVE_FLAGS} PARENT_SCOPE)
+set(TERMSCRIPT_STATIC_FLAGS ${TS_DRIVER_STATIC_FLAGS} PARENT_SCOPE)
+
+configure_file(termscript_stdlib.pc.in termscript_stdlib.pc @ONLY)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/termscript_stdlib.pc"
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
 # Installed companions live under <datadir>/termscript/stdlib; bake
 # that path in so G:import works out of the box after install.
@@ -140,7 +190,7 @@ install(FILES gen/ts_valvec.h gen/ts_strvec.h
 install(FILES q/tsvec.q q/run_qc.py
   DESTINATION ${CMAKE_INSTALL_DATADIR}/termlib/stdlib-q
 )
-foreach (m IN LISTS TS_STDLIB_MODULES)
+foreach (m IN LISTS TS_STDLIB_MODULES ITEMS stylesheet font_discovery)
   install(FILES ${m}/${m}.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript/stdlib/${m}
   )

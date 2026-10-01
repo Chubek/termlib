@@ -1,0 +1,2 @@
+# Unicode scalar and extended-grapheme operations; offsets are zero-based.
+const utf8_m = G:load "std.utf8" or G:die "std.utf8 missing";

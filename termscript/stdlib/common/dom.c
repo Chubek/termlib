@@ -144,15 +144,15 @@ ts_dom_obj_set (ts_dom_t *obj, const char *key, ts_dom_t *v)
         return TS_OK;
       }
   nk = realloc (obj->keys, (obj->npairs + 1) * sizeof *nk);
-  nv = realloc (obj->vals, (obj->npairs + 1) * sizeof *nv);
-  if (!nk || !nv)
+  if (!nk)
     {
-      free (nk);
-      free (nv);
       ts_dom_free (v);
       return TS_ERR_NOMEM;
     }
   obj->keys = nk;
+  nv = realloc (obj->vals, (obj->npairs + 1) * sizeof *nv);
+  if (!nv)
+    { ts_dom_free (v); return TS_ERR_NOMEM; }
   obj->vals = nv;
   obj->keys[obj->npairs] = strdup (key);
   if (!obj->keys[obj->npairs])

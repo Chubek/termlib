@@ -1,258 +1,154 @@
-/* screen.c -- std.screen: an in-memory character grid.
- *
- * put() writes text at a cell, render()/text() dump the grid;
- * std.vterm feeds escape sequences into the same shape of buffer.
- */
+/* std.screen -- styled Unicode grids, clipping and snapshot cell access. */
 #include "screen/screen.h"
-
-#include "common/ts_std_common.h"
-
-#include <stdio.h>
+#include "common/grid.h"
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct
-{
-  char *cells;
-  size_t rows, cols;
-} screen_t;
-
-static const char screen_tag_id = 0;
+static const char screen_tag;
 
 static void
 screen_free (void *p)
 {
-  screen_t *s = p;
-  if (!s)
-    return;
-  free (s->cells);
-  free (s);
+  ts_grid_free (p);
+  free (p);
 }
 
-static screen_t *
-screen_unwrap (const TS_Value *v, TS_Error *error, const char *what)
+ts_grid_t *
+ts_screen_unwrap (const TS_Value *v, TS_Error *e)
 {
-  return ts_std_handle (v, &screen_tag_id, error, what);
+  return ts_std_handle (v, &screen_tag, e, "screen");
 }
 
 static TS_Status
-s_new (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
-       TS_Value *ret, TS_Error *error)
+s_new (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error *e)
 {
   int64_t rows = 24, cols = 80;
-  screen_t *s;
-  char desc[64];
+  ts_grid_t *g;
+  TS_Status st;
   (void) ud;
-  if (ts_std_argc (vm, argc, 0, 2, error, "new") != TS_OK)
-    return TS_ERR_INVAL;
-  if (argc >= 1 && ts_std_int (&argv[0], &rows, error, "new") != TS_OK)
-    return TS_ERR_INVAL;
-  if (argc == 2 && ts_std_int (&argv[1], &cols, error, "new") != TS_OK)
-    return TS_ERR_INVAL;
-  if (rows < 1 || rows > 500 || cols < 1 || cols > 500)
-    {
-      ts_error_set (error, TS_ERR_INVAL, 0, 0, "new: bad size");
-      return TS_ERR_INVAL;
-    }
-  s = calloc (1, sizeof *s);
-  if (!s)
-    {
-      ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
-      return TS_ERR_NOMEM;
-    }
-  s->cells = malloc ((size_t) rows * (size_t) cols);
-  if (!s->cells)
-    {
-      free (s);
-      ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
-      return TS_ERR_NOMEM;
-    }
-  memset (s->cells, ' ', (size_t) rows * (size_t) cols);
-  s->rows = (size_t) rows;
-  s->cols = (size_t) cols;
-  snprintf (desc, sizeof desc, "<screen %lldx%lld>", (long long) rows,
-            (long long) cols);
-  if (ts_value_make_handle (ret, s, screen_free, desc,
-                            &screen_tag_id) != TS_OK)
-    {
-      screen_free (s);
-      ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
-      return TS_ERR_NOMEM;
-    }
+  if (ts_std_argc (vm, n, 0, 2, e, "screen.new") ||
+      (n && ts_std_int (a, &rows, e, "screen.new")) ||
+      (n > 1 && ts_std_int (a + 1, &cols, e, "screen.new"))) return TS_ERR_INVAL;
+  g = calloc (1, sizeof *g);
+  if (!g) return ts_std_oom (e);
+  st = ts_grid_init (g, rows, cols, e);
+  if (st) { free (g); return st; }
+  if (ts_value_make_handle (ret, g, screen_free, "<screen>", &screen_tag))
+    { screen_free (g); return ts_std_oom (e); }
   return TS_OK;
 }
 
 static TS_Status
-s_put (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
-       TS_Value *ret, TS_Error *error)
+s_put (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error *e)
 {
-  screen_t *s;
-  int64_t r, c;
-  const char *text;
-  size_t i;
+  ts_grid_t *g;
+  int64_t row, col;
+  const char *s;
+  ts_cell_style_t style = ts_style_default ();
+  TS_Status st;
   (void) ud;
-  if (ts_std_argc (vm, argc, 4, 4, error, "put") != TS_OK)
-    return TS_ERR_INVAL;
-  s = screen_unwrap (&argv[0], error, "put");
-  if (!s || ts_std_int (&argv[1], &r, error, "put") != TS_OK ||
-      ts_std_int (&argv[2], &c, error, "put") != TS_OK ||
-      ts_std_str (&argv[3], &text, error, "put") != TS_OK)
-    return TS_ERR_INVAL;
-  if (r < 0 || (size_t) r >= s->rows || c < 0)
+  if (ts_std_argc (vm, n, 4, 5, e, "put") || ts_std_int (a + 1, &row, e, "put") ||
+      ts_std_int (a + 2, &col, e, "put")) return TS_ERR_INVAL;
+  g = ts_screen_unwrap (a, e);
+  if (!g) return TS_ERR_INVAL;
+  if (n == 5) { st = ts_style_parse (&style, a + 4, e); if (st) return st; }
+  if (row < 0 || col < 0 || (uint64_t) row >= g->rows || (uint64_t) col >= g->cols)
+    { ts_std_ret_bool (ret, false); return TS_OK; }
+  if (a[3].type == TS_HANDLE)
     {
-      ts_std_ret_bool (ret, false);
-      return TS_OK;
+      const ts_cell_t *c = ts_cell_unwrap (a + 3, e);
+      ts_cell_t next;
+      if (!c) return TS_ERR_INVAL;
+      next = *c;
+      if (n == 5) next.style = style;
+      ts_grid_put_cell (g, (size_t) row, (size_t) col, &next);
     }
-  for (i = 0; text[i] && (size_t) c + i < s->cols; i++)
-    s->cells[(size_t) r * s->cols + (size_t) c + i] = text[i];
+  else
+    {
+      if (ts_std_str (a + 3, &s, e, "put")) return TS_ERR_INVAL;
+      st = ts_grid_write (g, (size_t) row, (size_t) col, s, style, e);
+      if (st) return st;
+    }
   ts_std_ret_bool (ret, true);
   return TS_OK;
 }
 
 static TS_Status
-s_clear (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
-         TS_Value *ret, TS_Error *error)
+s_fill (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error *e)
 {
-  screen_t *s;
-  (void) ud;
-  if (ts_std_argc (vm, argc, 1, 1, error, "clear") != TS_OK)
-    return TS_ERR_INVAL;
-  s = screen_unwrap (&argv[0], error, "clear");
-  if (!s)
-    return TS_ERR_INVAL;
-  memset (s->cells, ' ', s->rows * s->cols);
-  ts_std_ret_nil (ret);
-  return TS_OK;
-}
-
-static TS_Status
-s_fill (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
-        TS_Value *ret, TS_Error *error)
-{
-  screen_t *s;
-  const char *ch;
-  (void) ud;
-  if (ts_std_argc (vm, argc, 2, 2, error, "fill") != TS_OK)
-    return TS_ERR_INVAL;
-  s = screen_unwrap (&argv[0], error, "fill");
-  if (!s || ts_std_str (&argv[1], &ch, error, "fill") != TS_OK)
-    return TS_ERR_INVAL;
-  if (!ch[0])
+  ts_grid_t *g;
+  ts_cell_t c;
+  const char *s;
+  size_t row, col;
+  TS_Status st;
+  if (ts_std_argc (vm, n, ud ? 1 : 2, ud ? 1 : 2, e, "fill")) return TS_ERR_INVAL;
+  g = ts_screen_unwrap (a, e);
+  if (!g) return TS_ERR_INVAL;
+  if (ud) ts_grid_clear (g, ts_style_default ());
+  else
     {
-      ts_error_set (error, TS_ERR_INVAL, 0, 0, "fill: empty char");
-      return TS_ERR_INVAL;
-    }
-  memset (s->cells, ch[0], s->rows * s->cols);
-  ts_std_ret_nil (ret);
-  return TS_OK;
-}
-
-static TS_Status
-s_text (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
-        TS_Value *ret, TS_Error *error)
-{
-  screen_t *s;
-  ts_sbuf_t b;
-  size_t r;
-  char *out;
-  (void) ud;
-  if (ts_std_argc (vm, argc, 1, 1, error, "text") != TS_OK)
-    return TS_ERR_INVAL;
-  s = screen_unwrap (&argv[0], error, "text");
-  if (!s)
-    return TS_ERR_INVAL;
-  ts_sbuf_init (&b);
-  for (r = 0; r < s->rows; r++)
-    {
-      /* Trim trailing blanks per row. */
-      size_t end = s->cols;
-      while (end > 0 && s->cells[r * s->cols + end - 1] == ' ')
-        end--;
-      if (ts_sbuf_put (&b, s->cells + r * s->cols, end) != 0 ||
-          ts_sbuf_ch (&b, '\n') != 0)
+      if (a[1].type == TS_HANDLE)
+        { const ts_cell_t *v = ts_cell_unwrap (a + 1, e); if (!v) return TS_ERR_INVAL; c = *v; }
+      else
         {
-          ts_sbuf_free (&b);
-          ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
-          return TS_ERR_NOMEM;
+          if (ts_std_str (a + 1, &s, e, "fill")) return TS_ERR_INVAL;
+          st = ts_cell_set (&c, s, strlen (s), ts_style_default (), e);
+          if (st) return st;
         }
+      if (c.width < 1 || c.width > 2) return ts_std_inval (e, "fill: leading cell required");
+      ts_grid_clear (g, c.style);
+      for (row = 0; row < g->rows; row++)
+        for (col = 0; col + c.width <= g->cols; col += c.width) ts_grid_put_cell (g, row, col, &c);
     }
-  out = ts_sbuf_take (&b);
-  ts_value_free (ret);
-  ret->type = TS_STRING;
-  ret->as.string = out;
-  if (!ret->as.string)
-    {
-      ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
-      return TS_ERR_NOMEM;
-    }
+  ts_std_ret_nil (ret);
   return TS_OK;
 }
 
 static TS_Status
-s_line (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
-        TS_Value *ret, TS_Error *error)
+s_get (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error *e)
 {
-  screen_t *s;
-  int64_t r;
-  size_t end;
-  (void) ud;
-  if (ts_std_argc (vm, argc, 2, 2, error, "line") != TS_OK)
-    return TS_ERR_INVAL;
-  s = screen_unwrap (&argv[0], error, "line");
-  if (!s || ts_std_int (&argv[1], &r, error, "line") != TS_OK)
-    return TS_ERR_INVAL;
-  if (r < 0 || (size_t) r >= s->rows)
-    {
-      ts_std_ret_nil (ret);
-      return TS_OK;
-    }
-  end = s->cols;
-  while (end > 0 && s->cells[(size_t) r * s->cols + end - 1] == ' ')
-    end--;
-  return ts_std_ret_strn (ret, s->cells + (size_t) r * s->cols, end,
-                          error);
+  ts_grid_t *g;
+  int64_t row, col;
+  ts_sbuf_t b;
+  intptr_t op = (intptr_t) ud;
+  if (ts_std_argc (vm, n, op == 4 ? 2 : op == 5 ? 3 : 1,
+                  op == 4 ? 2 : op == 5 ? 3 : 1, e, "screen")) return TS_ERR_INVAL;
+  g = ts_screen_unwrap (a, e);
+  if (!g) return TS_ERR_INVAL;
+  if (op == 0 || op == 1) return ts_grid_render (ret, g, op == 1, e);
+  if (op == 2 || op == 3)
+    { ts_std_ret_int (ret, (int64_t) (op == 2 ? g->rows : g->cols)); return TS_OK; }
+  if (ts_std_int (a + 1, &row, e, "screen")) return TS_ERR_INVAL;
+  if (op == 5 && ts_std_int (a + 2, &col, e, "screen")) return TS_ERR_INVAL;
+  if (row < 0 || (uint64_t) row >= g->rows || (op == 5 && (col < 0 || (uint64_t) col >= g->cols)))
+    { ts_std_ret_nil (ret); return TS_OK; }
+  if (op == 5) return ts_cell_wrap (ret, &g->cells[(size_t) row * g->cols + (size_t) col], e);
+  ts_sbuf_init (&b);
+  if (ts_grid_line (&b, g, (size_t) row, false, true)) { ts_sbuf_free (&b); return ts_std_oom (e); }
+  return ts_std_ret_sbuf (ret, &b, e);
 }
 
 static TS_Status
-s_rows (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
-        TS_Value *ret, TS_Error *error)
+s_resize (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error *e)
 {
-  screen_t *s;
+  ts_grid_t *g;
+  int64_t rows, cols;
+  TS_Status st;
   (void) ud;
-  if (ts_std_argc (vm, argc, 1, 1, error, "rows") != TS_OK)
-    return TS_ERR_INVAL;
-  s = screen_unwrap (&argv[0], error, "rows");
-  if (!s)
-    return TS_ERR_INVAL;
-  ts_std_ret_int (ret, (int64_t) s->rows);
-  return TS_OK;
+  if (ts_std_argc (vm, n, 3, 3, e, "resize") || ts_std_int (a + 1, &rows, e, "resize") ||
+      ts_std_int (a + 2, &cols, e, "resize")) return TS_ERR_INVAL;
+  g = ts_screen_unwrap (a, e);
+  if (!g) return TS_ERR_INVAL;
+  st = ts_grid_resize (g, rows, cols, e);
+  ts_std_ret_nil (ret);
+  return st;
 }
 
-static TS_Status
-s_cols (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
-        TS_Value *ret, TS_Error *error)
-{
-  screen_t *s;
-  (void) ud;
-  if (ts_std_argc (vm, argc, 1, 1, error, "cols") != TS_OK)
-    return TS_ERR_INVAL;
-  s = screen_unwrap (&argv[0], error, "cols");
-  if (!s)
-    return TS_ERR_INVAL;
-  ts_std_ret_int (ret, (int64_t) s->cols);
-  return TS_OK;
-}
-
-static const TS_FuncDef screen_funcs[] = {
-  { "new", s_new, NULL },
-  { "put", s_put, NULL },
-  { "clear", s_clear, NULL },
-  { "fill", s_fill, NULL },
-  { "text", s_text, NULL },
-  { "line", s_line, NULL },
-  { "rows", s_rows, NULL },
-  { "cols", s_cols, NULL },
-  { NULL, NULL, NULL }
+static const TS_FuncDef funcs[] = {
+  {"new", s_new, NULL}, {"put", s_put, NULL}, {"clear", s_fill, (void *) 1},
+  {"fill", s_fill, NULL}, {"text", s_get, NULL}, {"render", s_get, (void *) 1},
+  {"ansi", s_get, (void *) 1}, {"rows", s_get, (void *) 2}, {"cols", s_get, (void *) 3},
+  {"line", s_get, (void *) 4}, {"cell", s_get, (void *) 5}, {"resize", s_resize, NULL},
+  {NULL, NULL, NULL}
 };
-
-const TS_Module ts_std_screen_module = { "std.screen", screen_funcs };
+const TS_Module ts_std_screen_module = {"std.screen", funcs};

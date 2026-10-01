@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 TS_Status
 ts_std_str (const TS_Value *v, const char **out, TS_Error *error,
@@ -67,13 +68,17 @@ ts_std_ret_str (TS_Value *ret, const char *s, TS_Error *error)
 TS_Status
 ts_std_ret_strn (TS_Value *ret, const char *s, size_t n, TS_Error *error)
 {
-  char *copy = malloc (n + 1);
+  char *copy;
+  if (n == SIZE_MAX || (!s && n))
+    return ts_std_inval (error, "invalid string length");
+  copy = malloc (n + 1);
   if (!copy)
     {
       ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
       return TS_ERR_NOMEM;
     }
-  memcpy (copy, s ? s : "", n);
+  if (n)
+    memcpy (copy, s, n);
   copy[n] = '\0';
   ts_value_free (ret);
   ret->type = TS_STRING;
@@ -97,6 +102,41 @@ void
 ts_std_ret_nil (TS_Value *ret)
 {
   ts_value_make_nil (ret);
+}
+
+TS_Status
+ts_std_oom (TS_Error *error)
+{
+  ts_error_set (error, TS_ERR_NOMEM, ENOMEM, 0, "out of memory");
+  return TS_ERR_NOMEM;
+}
+
+TS_Status
+ts_std_inval (TS_Error *error, const char *message)
+{
+  ts_error_set (error, TS_ERR_INVAL, 0, 0, "%s", message);
+  return TS_ERR_INVAL;
+}
+
+TS_Status
+ts_std_system (TS_Error *error, const char *operation)
+{
+  int saved = errno;
+  ts_error_set (error, TS_ERR_SYSTEM, saved, 0, "%s: %s", operation,
+                strerror (saved));
+  return TS_ERR_SYSTEM;
+}
+
+TS_Status
+ts_std_ret_sbuf (TS_Value *ret, ts_sbuf_t *b, TS_Error *error)
+{
+  char *s = ts_sbuf_take (b);
+  if (!s)
+    return ts_std_oom (error);
+  ts_value_free (ret);
+  ret->type = TS_STRING;
+  ret->as.string = s;
+  return TS_OK;
 }
 
 TS_Status

@@ -1,0 +1,2 @@
+# Expand ${name} from a std.map, plus user/host/cwd/home/uid/time builtins.
+const prompt_string_m = G:load "std.prompt_string" or G:die "std.prompt_string missing";

@@ -7,6 +7,7 @@
 #include "widget/widget.h"
 
 #include "common/ts_std_common.h"
+#include "common/text.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,7 +64,7 @@ w_table (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
           const char *hit = strstr (cp, colsep);
           const char *lim = nl ? nl : cp + strlen (cp);
           const char *end = (hit && hit < lim) ? hit : lim;
-          size_t w = (size_t) (end - cp);
+           size_t w = ts_text_width (cp, (size_t) (end - cp));
           size_t *nw;
           if (c >= ncols)
             {
@@ -97,10 +98,11 @@ w_table (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
           const char *hit = strstr (cp, colsep);
           const char *lim = nl ? nl : cp + strlen (cp);
           const char *end = (hit && hit < lim) ? hit : lim;
-          size_t w = (size_t) (end - cp);
+           size_t bytes = (size_t) (end - cp);
+           size_t w = ts_text_width (cp, bytes);
           size_t i;
           bool last = !hit || (nl && hit >= nl);
-          if (ts_sbuf_put (&b, cp, w) != 0)
+           if (ts_sbuf_put (&b, cp, bytes) != 0)
             goto oom2;
           if (!last)
             {
@@ -192,7 +194,8 @@ w_progress (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       ts_std_int (&argv[1], &total, error, "progress") != TS_OK)
     return TS_ERR_INVAL;
   mv[0].type = TS_INT;
-  mv[0].as.integer = total <= 0 ? 0 : (cur * 100) / total;
+  mv[0].as.integer = total <= 0 || cur <= 0 ? 0 : cur >= total ? 100 :
+                     (int64_t) ((long double) cur * 100 / total);
   mv[1].type = TS_INT;
   mv[1].as.integer = 20;
   if (argc == 3)
@@ -220,9 +223,7 @@ w_spinner (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
     return TS_ERR_INVAL;
   if (ts_std_int (&argv[0], &i, error, "spinner") != TS_OK)
     return TS_ERR_INVAL;
-  if (i < 0)
-    i = -i;
-  f[0] = frames[i % 4];
+  f[0] = frames[(uint64_t) i % 4];
   f[1] = '\0';
   return ts_std_ret_str (ret, f, error);
 }

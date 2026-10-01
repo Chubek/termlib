@@ -22,22 +22,30 @@
 
 #include "array/array.h"
 #include "autocomp/autocomp.h"
+#include "baudrate/baudrate.h"
+#include "bidi/bidi.h"
 #include "buffer/buffer.h"
+#include "cell/cell.h"
 #include "codec/codec.h"
 #include "color/color.h"
+#include "css/css.h"
 #include "csv/csv.h"
 #include "draw/draw.h"
 #include "edit_history/edit_history.h"
 #include "env/env.h"
 #include "exec/exec.h"
 #include "expect/expect.h"
+#include "font/font.h"
+#include "font_discovery/font_discovery.h"
 #include "fsm/fsm.h"
 #include "glob/glob.h"
+#include "html/html.h"
 #include "http/http.h"
 #include "io/io.h"
 #include "ipc/ipc.h"
 #include "json/json.h"
 #include "key/key.h"
+#include "layout/layout.h"
 #include "list/list.h"
 #include "log/log.h"
 #include "map/map.h"
@@ -47,6 +55,7 @@
 #include "pipe/pipe.h"
 #include "pty/pty.h"
 #include "prompt/prompt.h"
+#include "prompt_string/prompt_string.h"
 #include "readline/readline.h"
 #include "regex/regex.h"
 #include "rules/rules.h"
@@ -56,14 +65,19 @@
 #include "socket/socket.h"
 #include "stream/stream.h"
 #include "style/style.h"
+#include "stylesheet/stylesheet.h"
 #include "syntax/syntax.h"
 #include "table/table.h"
 #include "termcap/termcap.h"
 #include "terminfo/terminfo.h"
+#include "terminal/terminal.h"
+#include "termios/termios.h"
 #include "test/test.h"
 #include "text_search/text_search.h"
 #include "theme/theme.h"
 #include "toml/toml.h"
+#include "tui/tui.h"
+#include "utf8/utf8.h"
 #include "verbatim/verbatim.h"
 #include "vterm/vterm.h"
 #include "widget/widget.h"
@@ -76,7 +90,10 @@ extern "C"
 #endif
 
 /* Number of bundled native modules. */
-#define TS_STDLIB_NMODULES 49
+#define TS_STDLIB_NMODULES 63
+/* Metadata is borrowed immutable static storage; out-of-range returns NULL. */
+size_t ts_stdlib_module_count (void);
+const TS_Module *ts_stdlib_module_at (size_t index);
 
 /* Register every std.* module on `vm` (duplicate registration fails
  * with TS_ERR_INVAL, like any other module). */

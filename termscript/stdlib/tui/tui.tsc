@@ -1,0 +1,2 @@
+# Double-buffered styled canvas, changed-row output and scoped raw/alternate mode.
+const tui_m = G:load "std.tui" or G:die "std.tui missing";

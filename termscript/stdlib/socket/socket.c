@@ -9,17 +9,20 @@
 #include "common/ts_std_common.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 typedef struct
 {
   int fd;
+  int timeout;
 } sock_t;
 
 static const char sock_tag_id = 0;
@@ -60,6 +63,9 @@ sock_wrap (TS_Value *ret, int fd, const char *label, TS_Error *error)
       return TS_ERR_NOMEM;
     }
   s->fd = fd;
+  s->timeout = 0;
+  if (fcntl (fd, F_SETFD, FD_CLOEXEC))
+    { TS_Status st = ts_std_system (error, "socket close-on-exec"); sock_free (s); return st; }
   snprintf (desc, sizeof desc, "<socket %s>", label);
   if (ts_value_make_handle (ret, s, sock_free, desc, &sock_tag_id) !=
       TS_OK)
@@ -139,10 +145,17 @@ s_send (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
         {
           if (errno == EINTR)
             continue;
-          ts_error_set (error, TS_ERR_SYSTEM, errno, 0, "send: %s",
+           if (errno == EAGAIN || errno == EWOULDBLOCK)
+             {
+               if (sent) { ts_std_ret_int (ret, (int64_t) sent); return TS_OK; }
+               TS_Status code = s->timeout && !(fcntl (s->fd, F_GETFL) & O_NONBLOCK) ? TS_ERR_TIMEOUT : TS_ERR_WOULD_BLOCK;
+               ts_error_set (error, code, errno, sent, "send: %s", ts_status_string (code)); return code;
+             }
+           ts_error_set (error, TS_ERR_SYSTEM, errno, sent, "send: %s",
                         strerror (errno));
           return TS_ERR_SYSTEM;
         }
+      if (!r) { errno = EPIPE; return ts_std_system (error, "send"); }
       sent += (size_t) r;
     }
   ts_std_ret_int (ret, (int64_t) sent);
@@ -185,9 +198,14 @@ s_recv (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
     }
   if (r < 0)
     {
+      int saved = errno;
       free (buf);
-      ts_error_set (error, TS_ERR_SYSTEM, errno, 0, "recv: %s",
-                    strerror (errno));
+      if (saved == EAGAIN || saved == EWOULDBLOCK)
+        {
+          TS_Status code = s->timeout && !(fcntl (s->fd, F_GETFL) & O_NONBLOCK) ? TS_ERR_TIMEOUT : TS_ERR_WOULD_BLOCK;
+          ts_error_set (error, code, saved, 0, "recv: %s", ts_status_string (code)); return code;
+        }
+      ts_error_set (error, TS_ERR_SYSTEM, saved, 0, "recv: %s", strerror (saved));
       return TS_ERR_SYSTEM;
     }
   if (!r)
@@ -197,6 +215,7 @@ s_recv (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       return TS_OK;
     }
   buf[r] = '\0';
+  if (memchr (buf, 0, (size_t) r)) { free (buf); return ts_std_inval (error, "recv: embedded NUL"); }
   ts_value_free (ret);
   ret->type = TS_STRING;
   ret->as.string = buf;
@@ -215,7 +234,7 @@ s_listen (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
     return TS_ERR_INVAL;
   if (ts_std_int (&argv[0], &port, error, "listen") != TS_OK)
     return TS_ERR_INVAL;
-  if (port < 1 || port > 65535)
+  if (port < 0 || port > 65535)
     {
       ts_error_set (error, TS_ERR_INVAL, 0, 0, "listen: bad port");
       return TS_ERR_INVAL;
@@ -265,11 +284,18 @@ s_accept (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
     }
   if (fd < 0)
     {
+      if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+          TS_Status code = s->timeout && !(fcntl (s->fd, F_GETFL) & O_NONBLOCK) ? TS_ERR_TIMEOUT : TS_ERR_WOULD_BLOCK;
+          ts_error_set (error, code, errno, 0, "accept: %s", ts_status_string (code)); return code;
+        }
       ts_error_set (error, TS_ERR_SYSTEM, errno, 0, "accept: %s",
                     strerror (errno));
       return TS_ERR_SYSTEM;
     }
-  return sock_wrap (ret, fd, "conn", error);
+  TS_Status st = sock_wrap (ret, fd, "conn", error);
+  if (!st) ((sock_t *) ts_value_handle (ret, &sock_tag_id))->timeout = s->timeout;
+  return st;
 }
 
 static TS_Status
@@ -292,6 +318,32 @@ s_close (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
   return TS_OK;
 }
 
+static TS_Status
+s_options (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error *e)
+{
+  sock_t *s;
+  intptr_t op = (intptr_t) ud;
+  int64_t ms;
+  if (ts_std_argc (vm, n, op ? 2 : 1, op ? 2 : 1, e, "socket")) return TS_ERR_INVAL;
+  s = sock_unwrap (a, e, "socket"); if (!s) return TS_ERR_INVAL;
+  if (!op) { ts_std_ret_int (ret, s->fd); return TS_OK; }
+  if (op == 1)
+    {
+      struct timeval t;
+      if (ts_std_int (a + 1, &ms, e, "set_timeout") || ms < 0 || ms > INT32_MAX) return ts_std_inval (e, "set_timeout: milliseconds must be 0..INT32_MAX");
+      t.tv_sec = (time_t) (ms / 1000); t.tv_usec = (suseconds_t) ((ms % 1000) * 1000);
+      if (setsockopt (s->fd, SOL_SOCKET, SO_RCVTIMEO, &t, sizeof t) || setsockopt (s->fd, SOL_SOCKET, SO_SNDTIMEO, &t, sizeof t)) return ts_std_system (e, "set_timeout");
+      s->timeout = (int) ms;
+    }
+  else
+    {
+      int flags = fcntl (s->fd, F_GETFL);
+      if (a[1].type != TS_BOOL) return ts_std_inval (e, "nonblocking: bool required");
+      if (flags < 0 || fcntl (s->fd, F_SETFL, a[1].as.boolean ? flags | O_NONBLOCK : flags & ~O_NONBLOCK)) return ts_std_system (e, "socket flags");
+    }
+  ts_std_ret_bool (ret, true); return TS_OK;
+}
+
 static const TS_FuncDef socket_funcs[] = {
   { "connect", s_connect, NULL },
   { "send", s_send, NULL },
@@ -299,6 +351,8 @@ static const TS_FuncDef socket_funcs[] = {
   { "listen", s_listen, NULL },
   { "accept", s_accept, NULL },
   { "close", s_close, NULL },
+  { "fd", s_options, NULL }, { "set_timeout", s_options, (void *) 1 },
+  { "nonblocking", s_options, (void *) 2 },
   { NULL, NULL, NULL }
 };
 

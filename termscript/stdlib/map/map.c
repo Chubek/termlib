@@ -117,16 +117,21 @@ m_set (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
     {
       size_t nc = m->cap ? m->cap * 2 : 8;
       char **nk = realloc (m->keys, nc * sizeof *nk);
-      TS_Value *nv = realloc (m->vals, nc * sizeof *nv);
-      if (!nk || !nv)
+      TS_Value *nv;
+      if (!nk)
         {
-          free (nk);
-          free (nv);
           ts_value_free (&tmp);
           ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
           return TS_ERR_NOMEM;
         }
       m->keys = nk;
+      nv = realloc (m->vals, nc * sizeof *nv);
+      if (!nv)
+        {
+          ts_value_free (&tmp);
+          ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
+          return TS_ERR_NOMEM;
+        }
       m->vals = nv;
       m->cap = nc;
     }
@@ -217,8 +222,8 @@ m_del (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
     }
   free (m->keys[at]);
   ts_value_free (&m->vals[at]);
-  m->keys[at] = m->keys[m->n - 1];
-  m->vals[at] = m->vals[m->n - 1];
+  memmove (m->keys + at, m->keys + at + 1, (m->n - (size_t) at - 1) * sizeof *m->keys);
+  memmove (m->vals + at, m->vals + at + 1, (m->n - (size_t) at - 1) * sizeof *m->vals);
   m->n--;
   ts_std_ret_bool (ret, true);
   return TS_OK;

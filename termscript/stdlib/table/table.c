@@ -7,6 +7,7 @@
 #include "table/table.h"
 
 #include "common/ts_std_common.h"
+#include "common/text.h"
 #include "rules/rules.h"
 
 #include <stdlib.h>
@@ -49,7 +50,7 @@ measure (const char *rows, const char *column_separator,
         {
           const char *split = strstr (cell, column_separator);
           const char *end = split && split < limit ? split : limit;
-          size_t width = (size_t) (end - cell);
+          size_t width = ts_text_width (cell, (size_t) (end - cell));
           if (width > TABLE_MAX_CELL_WIDTH || column >= TABLE_MAX_COLUMNS)
             {
               free (widths);
@@ -107,7 +108,7 @@ append_row (ts_sbuf_t *out, const char *row, const char *column_separator,
       if (ts_sbuf_ch (out, ' ') != 0 ||
           ts_sbuf_put (out, cell, length) != 0)
         return -1;
-      for (padding = length; padding < widths[column]; padding++)
+      for (padding = ts_text_width (cell, length); padding < widths[column]; padding++)
         if (ts_sbuf_ch (out, ' ') != 0)
           return -1;
       if (ts_sbuf_ch (out, ' ') != 0 || ts_sbuf_ch (out, '|') != 0)
@@ -213,6 +214,7 @@ t_render (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       row = row_end + strlen (row_separator);
     }
   free (widths);
+  widths = NULL;
   {
     char *text = ts_sbuf_take (&out);
     ts_value_free (ret);

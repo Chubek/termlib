@@ -7,8 +7,11 @@
 #include "key/key.h"
 
 #include "common/ts_std_common.h"
+#include "common/text.h"
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 typedef struct
 {
@@ -71,6 +74,9 @@ k_parse (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
         }
     }
   ts_std_ret_nil (ret);
+  size_t bytes; int width;
+  if (ts_text_cluster (s, strlen (s), &bytes, &width) == 1 && bytes == strlen (s) && width > 0)
+    return ts_std_ret_str (ret, s, error);
   return TS_OK;
 }
 
@@ -95,6 +101,9 @@ k_encode (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       single[1] = '\0';
       return ts_std_ret_str (ret, single, error);
     }
+  size_t bytes; int width;
+  if (ts_text_cluster (name, strlen (name), &bytes, &width) == 1 && bytes == strlen (name) && width > 0)
+    return ts_std_ret_str (ret, name, error);
   if (name[0] == 'c' && name[1] == '-' && name[2] && !name[3] &&
       name[2] >= 'a' && name[2] <= 'z')
     {
@@ -120,10 +129,57 @@ k_is_esc (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
   return TS_OK;
 }
 
+static TS_Status
+k_event (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error *e)
+{
+  const char *s;
+  ts_dom_t *d = NULL;
+  TS_Value name = {0};
+  TS_Status st;
+  size_t len;
+  (void) ud;
+  if (ts_std_argc (vm, n, 1, 1, e, "event") || ts_std_str (a, &s, e, "event")) return TS_ERR_INVAL;
+  len = strlen (s);
+  if (len > TS_TEXT_LIMIT) { ts_error_set (e, TS_ERR_LIMIT, 0, 0, "input event exceeds 1 MiB"); return TS_ERR_LIMIT; }
+  if (!strncmp (s, "\033[<", 3))
+    {
+      unsigned button, col, row; int consumed = 0;
+      if (sscanf (s + 3, "%u;%u;%u%n", &button, &col, &row, &consumed) != 3 ||
+          !row || !col || button > 255 || row > 65535 || col > 65535 ||
+          (size_t) consumed + 4 != len || (s[3 + consumed] != 'M' && s[3 + consumed] != 'm'))
+        { ts_std_ret_nil (ret); return TS_OK; }
+      d = ts_dom_new_obj ();
+      const char *action = button & 64 ? "scroll" : s[3 + consumed] == 'm' ? "release" : button & 32 ? "move" : "press";
+      if (!d || ts_dom_obj_set (d, "type", ts_dom_new_str ("mouse")) || ts_dom_obj_set (d, "action", ts_dom_new_str (action)) ||
+          ts_dom_obj_set (d, "button", ts_dom_new_int (button & 3)) || ts_dom_obj_set (d, "row", ts_dom_new_int (row - 1)) ||
+          ts_dom_obj_set (d, "col", ts_dom_new_int (col - 1)) || ts_dom_obj_set (d, "modifiers", ts_dom_new_int ((button >> 2) & 7))) goto oom;
+    }
+  else if (len >= 12 && !memcmp (s, "\033[200~", 6) && !memcmp (s + len - 6, "\033[201~", 6))
+    {
+      char *text = strndup (s + 6, len - 12);
+      if (!text) return ts_std_oom (e);
+      d = ts_dom_new_obj ();
+      bool failed = !d || ts_dom_obj_set (d, "type", ts_dom_new_str ("paste")) || ts_dom_obj_set (d, "text", ts_dom_new_str (text));
+      free (text); if (failed) goto oom;
+    }
+  else
+    {
+      st = k_parse (vm, NULL, a, n, &name, e); if (st) return st;
+      if (name.type == TS_NIL) { ts_std_ret_nil (ret); return TS_OK; }
+      d = ts_dom_new_obj ();
+      if (!d || ts_dom_obj_set (d, "type", ts_dom_new_str ("key")) || ts_dom_obj_set (d, "name", ts_dom_new_str (name.as.string)))
+        { ts_value_free (&name); goto oom; }
+      ts_value_free (&name);
+    }
+  return ts_dom_wrap (ret, d, e);
+oom: ts_dom_free (d); return ts_std_oom (e);
+}
+
 static const TS_FuncDef key_funcs[] = {
   { "parse", k_parse, NULL },
   { "encode", k_encode, NULL },
   { "is_esc", k_is_esc, NULL },
+  { "event", k_event, NULL },
   { NULL, NULL, NULL }
 };
 

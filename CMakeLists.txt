@@ -8,6 +8,8 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(Threads REQUIRED)
+include(GNUInstallDirs)
+include(CTest)
 
 # Perl drives scripts/aurocks.pl, which compiles Termscript.g into the
 # Termscript parser.  There is no fallback: the grammar is the source of
@@ -84,6 +86,7 @@ if(TARGET termscript_stdlib)
   # dt_termscript_create), so the driver and transpiled programs get
   # G:import out of the box.
   target_link_libraries(termscript PUBLIC termscript_stdlib)
+  target_compile_definitions(termscript PRIVATE TERMSCRIPT_HAVE_STDLIB=1)
 endif()
 
 # The generated parser carries benign unused-variable warnings from the
@@ -107,6 +110,37 @@ set_target_properties(termscript-driver PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 target_link_libraries(termscript-driver PRIVATE termscript)
+set(TS_DRIVER_BUILD_LIBS "\"$<TARGET_FILE:termscript>\",\n")
+set(TS_DRIVER_INSTALL_LIBS "\"-ltermscript\",\n")
+if(TARGET termscript_stdlib)
+  target_compile_definitions(termscript-driver PRIVATE TS_DRIVER_HAS_STDLIB=1)
+  string(APPEND TS_DRIVER_BUILD_LIBS "\"$<TARGET_FILE:termscript_stdlib>\",\n")
+  string(APPEND TS_DRIVER_INSTALL_LIBS "\"-ltermscript_stdlib\",\n")
+endif()
+string(APPEND TS_DRIVER_BUILD_LIBS "\"$<TARGET_FILE:termscript_standalone>\",\n\"$<TARGET_FILE:termlib>\",\n")
+string(APPEND TS_DRIVER_INSTALL_LIBS "\"-ltermscript_standalone\",\n\"-ltermlib\",\n")
+if(TARGET lexbor_static)
+  string(APPEND TS_DRIVER_BUILD_LIBS "\"$<TARGET_FILE:lexbor_static>\",\n")
+  string(APPEND TS_DRIVER_INSTALL_LIBS "\"-llexbor_static\",\n")
+endif()
+set(TS_DRIVER_FLAGS "\"-pthread\",\n")
+set(TS_DRIVER_STATIC_FLAGS "\"-pthread\",\n")
+foreach(flag IN LISTS TERMSCRIPT_NATIVE_FLAGS)
+  string(APPEND TS_DRIVER_FLAGS "\"${flag}\",\n")
+endforeach()
+foreach(flag IN LISTS TERMSCRIPT_STATIC_FLAGS)
+  string(APPEND TS_DRIVER_STATIC_FLAGS "\"${flag}\",\n")
+endforeach()
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/termscript_driver_config.h" CONTENT
+"#define TS_DRIVER_BUILD_INCLUDE \"${CMAKE_CURRENT_SOURCE_DIR}\"
+#define TS_DRIVER_INSTALL_INCLUDE \"${CMAKE_INSTALL_FULL_INCLUDEDIR}\"
+#define TS_DRIVER_INSTALL_LIBDIR \"${CMAKE_INSTALL_FULL_LIBDIR}\"
+static const char *const ts_driver_build_libs[] = {${TS_DRIVER_BUILD_LIBS} NULL};
+static const char *const ts_driver_install_libs[] = {${TS_DRIVER_INSTALL_LIBS} NULL};
+static const char *const ts_driver_native_flags[] = {${TS_DRIVER_FLAGS} NULL};
+static const char *const ts_driver_static_flags[] = {${TS_DRIVER_STATIC_FLAGS} NULL};
+")
+target_include_directories(termscript-driver PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(termscript-driver PRIVATE -Wall -Wextra)
 endif()
@@ -144,3 +178,21 @@ add_custom_target(termlib-manual
           ${CMAKE_CURRENT_SOURCE_DIR}/manual/01-overview.md
           ${CMAKE_CURRENT_SOURCE_DIR}/manual/22-portability-testing.md
 )
+
+if(BUILD_TESTING)
+  add_executable(test_termlib_cpp tests/test_termlib_cpp.cpp)
+  target_link_libraries(test_termlib_cpp PRIVATE termscript)
+  add_test(NAME termlib_cpp COMMAND test_termlib_cpp)
+  if(TARGET termscript_stdlib)
+    add_executable(test_termscript_stdlib tests/test_termscript_stdlib.c)
+    target_compile_definitions(test_termscript_stdlib PRIVATE _GNU_SOURCE)
+    target_link_libraries(test_termscript_stdlib PRIVATE termscript_stdlib)
+    add_test(NAME termscript_stdlib COMMAND test_termscript_stdlib)
+    add_test(NAME termscript_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_terminal.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/backend-test
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    set_tests_properties(termscript_stdlib termscript_backends PROPERTIES TIMEOUT 30)
+  endif()
+endif()

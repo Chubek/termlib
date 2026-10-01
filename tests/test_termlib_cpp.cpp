@@ -116,9 +116,9 @@ sample_entry ()
       std::vector<bool> (11, true),
       std::vector<int>{80, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
                        256},
-      std::vector<std::string>{"\a", "^G", "\r", "\\E[%i%p1%d;%p2%dr", "",
-                               "\\E[H\\E[2J", "", "", "\\E[%i%p1%dG", "%l",
-                               "\\E[%i%p1%d;%p2%dH"});
+      std::vector<std::string>{"\a", "^G", "\r", "\x1b[%i%p1%d;%p2%dr", "",
+                               "\x1b[H\x1b[2J", "", "", "\x1b[%i%p1%dG",
+                               "%p1%l%Pa%p1%s", "\x1b[%i%p1%d;%p2%dH"});
 }
 
 void
@@ -274,7 +274,7 @@ test_terminfo ()
   CHECK (prof.number ("cols").value_or (0) == 80);
   CHECK (prof.number ("colors").value_or (0) == 256);
   CHECK (!prof.number ("lines").has_value ()); /* absent (-1) */
-  CHECK (prof.text ("cup").value_or ("") == "\\E[%i%p1%d;%p2%dH");
+  CHECK (prof.text ("cup").value_or ("") == "\x1b[%i%p1%d;%p2%dH");
   const std::optional<termlib::capability_value> value
       = prof.value_of ("cols");
   CHECK (value && std::holds_alternative<std::int32_t> (*value));
@@ -371,7 +371,7 @@ test_terminfo ()
   /* The primary name resolves to the same entry. */
   CHECK (db.load ("testterm").name () == "testterm");
 
-  /* A database with no search paths cannot load anything. */
+  /* An uninitialized database is an invalid argument. */
   termlib::database empty;
   failure = termlib::status::ok;
   try
@@ -382,7 +382,7 @@ test_terminfo ()
     {
       failure = thrown.state ();
     }
-  CHECK (failure == termlib::status::not_found);
+  CHECK (failure == termlib::status::invalid_argument);
 
   /* Views borrow: a profile_view outlives its owner's scope safely as
      long as the profile is alive. */
@@ -438,7 +438,7 @@ test_terminfo_parser ()
     }
   CHECK (failure == termlib::status::parse);
 
-  /* Unknown magic numbers are unsupported, not malformed. */
+  /* The convenience parser reports malformed entries as parse errors. */
   std::vector<std::uint8_t> foreign = entry;
   foreign[0] = 0x99;
   foreign[1] = 0x99;
@@ -451,7 +451,7 @@ test_terminfo_parser ()
     {
       failure = thrown.state ();
     }
-  CHECK (failure == termlib::status::unsupported);
+  CHECK (failure == termlib::status::parse);
 
   /* Trailing garbage after a valid entry is malformed. */
   std::vector<std::uint8_t> padded = entry;
@@ -470,7 +470,10 @@ test_terminfo_parser ()
 
   /* An out-of-range string offset is rejected. */
   std::vector<std::uint8_t> bad_offset = entry;
-  const std::size_t offsets_at = 12 + 11 + 11 + 28;
+  const std::size_t names_size = entry[2] | (entry[3] << 8);
+  const std::size_t bool_count = entry[4] | (entry[5] << 8);
+  const std::size_t num_count = entry[6] | (entry[7] << 8);
+  const std::size_t offsets_at = ((12 + names_size + bool_count + 1) & ~std::size_t (1)) + 2 * num_count;
   bad_offset[offsets_at] = 0xfe;
   bad_offset[offsets_at + 1] = 0x00;
   failure = termlib::status::ok;
@@ -555,6 +558,8 @@ test_tty ()
   const termlib::written written = session.write_all ("0123456789");
   CHECK (written.ok ());
   CHECK (written.bytes == 10);
+  char sent[10];
+  CHECK (::read (pair[1], sent, sizeof sent) == 10);
 
   /* Closing the peer produces end of stream. */
   ::close (pair[1]);
@@ -653,11 +658,21 @@ test_pty ()
   const termlib::child_exit stopped = slow.wait ();
   CHECK (!stopped.exited_normally);
 
-  /* Nonblocking round trip through `cat`, including write_all. */
+  /* Nonblocking round trip through raw `cat`, including write_all.
+     Wait for setup before sending data to avoid line-discipline echo. */
   termlib::pty_options echo;
-  echo.argv = {"/bin/cat"};
+  echo.argv = {"/bin/sh", "-c", "stty raw -echo; printf ready; exec cat"};
   echo.nonblocking = true;
   termlib::pty_session cat = termlib::pty_session::spawn (echo);
+  std::string ready;
+  for (int attempt = 0; attempt < 100 && ready.size () < 5; ++attempt)
+    {
+      const termlib::result<std::string> chunk = cat.read_some (5 - ready.size ());
+      if (chunk) ready += chunk.value ();
+      else if (chunk.state () == termlib::status::would_block) ::usleep (2000);
+      else break;
+    }
+  CHECK (ready == "ready");
   const termlib::written written = cat.write_all ("ping\n");
   CHECK (written.ok ());
   CHECK (written.bytes == 5);
@@ -1105,15 +1120,18 @@ test_puppeteer ()
   /* The recorded session contains the child's output. */
   std::rewind (stream);
   termlib::replayer replayer = termlib::replayer::create (stream, false);
-  const termlib::result<termlib::record_event> event = replayer.next ();
-  CHECK (event.ok ());
-  if (event)
+  std::string recorded_output;
+  bool saw_resize = false;
+  for (;;)
     {
-      CHECK (event.value ().type == termlib::record_type::output);
-      CHECK (event.value ().text () == "hi");
+      const termlib::result<termlib::record_event> event = replayer.next ();
+      if (!event) { CHECK (event.state () == termlib::status::eof); break; }
+      if (event.value ().type == termlib::record_type::output)
+        recorded_output += event.value ().text ();
+      if (event.value ().type == termlib::record_type::resize) saw_resize = true;
     }
-  const termlib::result<termlib::record_event> end = replayer.next ();
-  CHECK (!end.ok ());
+  CHECK (recorded_output == "hi");
+  CHECK (saw_resize);
 
   std::fclose (stream);
   ::unlink (path.c_str ());

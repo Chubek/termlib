@@ -7,6 +7,7 @@
 #include "prompt/prompt.h"
 
 #include "common/ts_std_common.h"
+#include "common/text.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -46,34 +47,7 @@ get_prompt (const TS_Value *value, TS_Error *error, const char *name)
 static size_t
 visible_width (const char *text)
 {
-  size_t width = 0;
-  const unsigned char *p = (const unsigned char *) text;
-  while (*p)
-    {
-      if (*p == '\001' || *p == '\002')
-        {
-          p++;
-          continue;
-        }
-      if (*p == 0x1b && p[1])
-        {
-          p++;
-          if (*p == '[')
-            {
-              p++;
-              while (*p && !(*p >= '@' && *p <= '~'))
-                p++;
-              if (*p)
-                p++;
-            }
-          else
-            p++;
-          continue;
-        }
-      width++;
-      p++;
-    }
-  return width;
+  return ts_text_width (text, strlen (text));
 }
 
 static TS_Status

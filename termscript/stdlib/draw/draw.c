@@ -7,6 +7,7 @@
 #include "draw/draw.h"
 
 #include "common/ts_std_common.h"
+#include "common/text.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -48,7 +49,7 @@ d_hline (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
     }
   ts_sbuf_init (&b);
   for (i = 0; i < n; i++)
-    if (ts_sbuf_ch (&b, ch[0]) != 0)
+    if (ts_sbuf_str (&b, ch) != 0)
       {
         ts_sbuf_free (&b);
         ts_error_set (error, TS_ERR_NOMEM, 0, 0, "out of memory");
@@ -79,7 +80,7 @@ d_box (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       ts_error_set (error, TS_ERR_INVAL, 0, 0, "box: bad size");
       return TS_ERR_INVAL;
     }
-  tlen = strlen (title);
+  tlen = ts_text_width (title, strlen (title));
   ts_sbuf_init (&b);
   /* Top border, optionally titled: +-- title --+ */
   if (ts_sbuf_ch (&b, '+') != 0)
@@ -89,7 +90,7 @@ d_box (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       if (ts_sbuf_str (&b, "-- ") != 0 || ts_sbuf_str (&b, title) != 0 ||
           ts_sbuf_str (&b, " ") != 0)
         goto oom;
-      for (c = (int64_t) (tlen + 4); c < w - 1; c++)
+      for (c = (int64_t) (tlen + 4); c < w - 2; c++)
         if (ts_sbuf_ch (&b, '-') != 0)
           goto oom;
     }
@@ -179,7 +180,8 @@ d_progress (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
   if (argc == 3 && ts_std_int (&argv[2], &width, error, "progress") !=
       TS_OK)
     return TS_ERR_INVAL;
-  pct = total <= 0 ? 0 : (cur * 100) / total;
+  pct = total <= 0 || cur <= 0 ? 0 : cur >= total ? 100 :
+        (int64_t) ((long double) cur * 100 / total);
   /* Shallow ints only: d_bar reads but never frees argv. */
   bv[0].type = TS_INT;
   bv[0].as.integer = pct;
@@ -208,7 +210,7 @@ d_center (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
       ts_error_set (error, TS_ERR_INVAL, 0, 0, "center: bad width");
       return TS_ERR_INVAL;
     }
-  n = strlen (s);
+  n = ts_text_width (s, strlen (s));
   ts_sbuf_init (&b);
   if ((int64_t) n >= width)
     {

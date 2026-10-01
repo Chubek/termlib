@@ -40,13 +40,20 @@ ts_sbuf_put (ts_sbuf_t *b, const char *s, size_t n)
 {
   char *nb;
   size_t nc;
-  if (!b || (!s && n))
+  if (!b || (!s && n) || n > SIZE_MAX - b->len - 1)
     return -1;
   if (b->len + n + 1 > b->cap)
     {
-      nc = b->cap ? b->cap * 2 : 64;
+      nc = b->cap ? b->cap : 64;
       while (nc < b->len + n + 1)
-        nc *= 2;
+        {
+          if (nc > SIZE_MAX / 2)
+            {
+              nc = b->len + n + 1;
+              break;
+            }
+          nc *= 2;
+        }
       nb = realloc (b->data, nc);
       if (!nb)
         return -1;
