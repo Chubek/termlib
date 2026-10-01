@@ -42,10 +42,10 @@ endforeach ()
 
 # Vendored third-party sources (warning-cleanliness of our own files
 # is enforced below; vendored files compile with -w).
-set(TS_STDLIB_TOML_C ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/tomlc99/toml.c)
-set(TS_STDLIB_ISOCLINE_C ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/isocline/src/isocline.c)
-set(TS_STDLIB_TOML_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/tomlc99)
-set(TS_STDLIB_ISOCLINE_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/isocline/include)
+set(TS_STDLIB_TOML_C ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/tomlc99/toml.c)
+set(TS_STDLIB_ISOCLINE_C ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/isocline/src/isocline.c)
+set(TS_STDLIB_TOML_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/tomlc99)
+set(TS_STDLIB_ISOCLINE_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/isocline/include)
 
 if(NOT EXISTS "${TS_STDLIB_TOML_C}" OR NOT EXISTS "${TS_STDLIB_ISOCLINE_C}")
   message(WARNING "Termscript stdlib disabled: vendored tomlc99/isocline sources are missing")
@@ -94,7 +94,7 @@ endif()
 # python3 + tkinter + the Q bytecode cache are all present; otherwise
 # the committed gen/ outputs are used as-is.
 find_package(Python3 COMPONENTS Interpreter QUIET)
-set(TS_Q_CACHE ${CMAKE_CURRENT_SOURCE_DIR}/../../../../domlibs/domqlib/q/__pycache__)
+set(TS_Q_CACHE ${CMAKE_CURRENT_SOURCE_DIR}/../../domlibs/domqlib/q/__pycache__)
 if(Python3_FOUND AND EXISTS "${TS_Q_CACHE}")
   execute_process(
     COMMAND ${Python3_EXECUTABLE} -c "import tkinter"
