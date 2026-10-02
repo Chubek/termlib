@@ -3,10 +3,10 @@
 ## Requirements
 
 - CMake 3.15 or newer.
-- A C11 compiler and linker.
+- A C11 compiler and linker, plus a C++20 compiler for the full standard library.
 - Perl, used to generate the Termscript parser.
 - POSIX threads.
-- The vendored third-party sources under `third_party/tomlc99` and `third_party/isocline` for the full standard library.
+- The vendored third-party sources under `third_party/tomlc99`, `third_party/isocline`, `third_party/lexbor`, and `third_party/libshell` for the full standard library.
 
 The core libraries can still be built with `-DDOMWEAVE_BUILD_TERMSCRIPT_STDLIB=OFF` when the optional standard-library sources are unavailable.
 
@@ -37,7 +37,7 @@ Set `CMAKE_INSTALL_LIBDIR`, `CMAKE_INSTALL_INCLUDEDIR`, or `CMAKE_INSTALL_DATADI
 
 ## Building generated C
 
-For a generated Termscript unit that uses standard modules, link the generated source with `libtermscript`, `libtermscript_stdlib`, `libtermscript_standalone`, `libtermlib`, and the platform thread library. A generated unit that uses only the standalone runtime does not require `libtermscript_stdlib`.
+For a generated Termscript unit that uses standard modules, link the generated source with `libtermscript`, `libtermscript_stdlib`, `libtermscript_standalone`, `libtermlib`, and their native dependencies, including the C++ runtime for `std.shell`. The driver supplies this closure automatically; C embedders can use `pkg-config --libs termscript_stdlib`. A generated unit that uses only the standalone runtime does not require `libtermscript_stdlib`.
 
 Use `termscript -c` to stop after emitting C. Without `-c`, the driver can invoke the configured C compiler and produce an executable.
 

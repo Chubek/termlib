@@ -48,6 +48,7 @@ static const TS_Module *const stdlib_modules[] = {
   &ts_std_rules_module,
   &ts_std_sched_module,
   &ts_std_screen_module,
+  &ts_std_shell_module,
   &ts_std_signal_module,
   &ts_std_socket_module,
   &ts_std_stream_module,

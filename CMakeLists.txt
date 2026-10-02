@@ -188,11 +188,22 @@ if(BUILD_TESTING)
     target_compile_definitions(test_termscript_stdlib PRIVATE _GNU_SOURCE)
     target_link_libraries(test_termscript_stdlib PRIVATE termscript_stdlib)
     add_test(NAME termscript_stdlib COMMAND test_termscript_stdlib)
+    add_executable(test_termscript_shell tests/test_termscript_shell.c)
+    target_compile_definitions(test_termscript_shell PRIVATE _GNU_SOURCE)
+    target_link_libraries(test_termscript_shell PRIVATE termscript_stdlib)
+    add_test(NAME termscript_shell COMMAND test_termscript_shell)
     add_test(NAME termscript_backends COMMAND ${CMAKE_COMMAND}
       -DDRIVER=$<TARGET_FILE:termscript-driver>
       -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_terminal.tsc
       -DWORK=${CMAKE_CURRENT_BINARY_DIR}/backend-test
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
-    set_tests_properties(termscript_stdlib termscript_backends PROPERTIES TIMEOUT 30)
+    add_test(NAME termscript_shell_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_shell.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/shell-backend-test
+      "-DMARKER=shell stdlib OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    set_tests_properties(termscript_stdlib termscript_backends termscript_shell
+      termscript_shell_backends PROPERTIES TIMEOUT 30)
   endif()
 endif()

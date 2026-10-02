@@ -1,0 +1,3 @@
+TSP = elkhound.grammar.new "Termscript"
+
+TSP:Importnnewp

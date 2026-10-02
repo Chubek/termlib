@@ -1,8 +1,8 @@
 # Termscript Standard Library
 
-Forty-nine hybrid libraries. Each one is two halves:
+Hybrid libraries. Each one is two halves:
 
-- **C native module** (`<name>/<name>.c`, module `std.<name>`) — owns
+- **Native module** (`<name>/<name>.c`, or C++20 for `shell`, module `std.<name>`) — owns
   storage, parsing, syscalls and handles, written against
   `termscript.h` plus `common/ts_std_common.h`.
 - **Termscript companion** (`<name>/<name>.tsc`) — loaded with
@@ -56,6 +56,7 @@ G:puts second;
 | `rules` | `std.rules` | horizontal and vertical text rules |
 | `sched` | `std.sched` | monotonic/wall clocks, sleep_ms, elapsed |
 | `screen` | `std.screen` | in-memory character grids |
+| `shell` | `std.shell` | LibShell runtime: shell state, typed commands/pipelines, parsing, redirection and bounded capture ([API](shell/README.md)) |
 | `signal` | `std.signal` | signal numbers/names/delivery (no handlers: no callbacks by design) |
 | `socket` | `std.socket` | blocking TCP connect/send/recv/listen/accept/close |
 | `stream` | `std.stream` | append-only buffers with consuming getline |
@@ -105,7 +106,8 @@ plus `TERMSCRIPT_PATH`, and reject cycles. The aurocks grammar
   parses as a Tcl array index where `[...]` still evaluates.
 - **third_party**: `tomlc99/toml.c` (compiled in, behind
   `std.toml`), `isocline/src/isocline.c` (umbrella, behind
-  `std.readline`), `stb/stb_ds.h` reserved for future maps.
+   `std.readline`), LibShell's C++20 runtime/POSIX executor and parser
+   (`std.shell`), `stb/stb_ds.h` reserved for future maps.
 - **Termlib core**: untouched except `dt_termscript.c`, which
   auto-registers the stdlib on every `DT_TermVM` and reserves the
   `std.` prefix for it.
@@ -196,5 +198,5 @@ the arena until every VM using those buffers has been freed. The adapter
 uses DomMEMTk's nonmoving free-list allocator; Termscript handle
 payloads remain owned by their handle destructors. Install or reset
 the process-wide allocator before creating VMs, while no other thread
-is creating buffers. The normal Termscript library has no C++ runtime
-dependency.
+is creating buffers. The standard library links the C++ runtime for
+`std.shell`; the standalone Termscript runtime remains C-only.

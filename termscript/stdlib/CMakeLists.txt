@@ -1,7 +1,7 @@
 # Termscript standard library — hybrid C native modules + .tsc companions.
 #
 # Layout:
-#   <name>/<name>.c     native TS_Module (storage, parsing, syscalls)
+#   <name>/<name>.c     native TS_Module (shell uses C++20)
 #   <name>/<name>.h     module declaration (installed)
 #   <name>/<name>.tsc   Termscript companion, loaded via G:import (installed)
 #   common/             shared sbuf/args/list-store/DOM helpers (private)
@@ -23,7 +23,7 @@ endif()
 set(TS_STDLIB_MODULES
   array autocomp baudrate bidi buffer cell codec color css csv draw edit_history env exec expect font fsm glob html http io
   ipc json key layout list log map menu notify panel pipe pty prompt prompt_string readline regex rules
-  sched screen signal socket stream style syntax table termcap terminfo test text_search theme
+  sched screen shell signal socket stream style syntax table termcap terminfo test text_search theme
   terminal termios toml tui utf8 verbatim vterm widget word_motion yaml
 )
 
@@ -38,7 +38,11 @@ set(TS_STDLIB_SOURCES
   ts_stdlib.c
 )
 foreach (m IN LISTS TS_STDLIB_MODULES)
-  list (APPEND TS_STDLIB_SOURCES ${m}/${m}.c)
+  if(m STREQUAL "shell")
+    list(APPEND TS_STDLIB_SOURCES ${m}/${m}.cpp)
+  else()
+    list(APPEND TS_STDLIB_SOURCES ${m}/${m}.c)
+  endif()
 endforeach ()
 
 # Vendored third-party sources (warning-cleanliness of our own files
@@ -47,9 +51,17 @@ set(TS_STDLIB_TOML_C ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/tomlc99/toml.
 set(TS_STDLIB_ISOCLINE_C ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/isocline/src/isocline.c)
 set(TS_STDLIB_TOML_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/tomlc99)
 set(TS_STDLIB_ISOCLINE_INC ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/isocline/include)
+set(TS_STDLIB_LIBSHELL ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/libshell)
+set(TS_STDLIB_SHELL_PARSER
+  ${TS_STDLIB_LIBSHELL}/cli/lsh-lex.cpp
+  ${TS_STDLIB_LIBSHELL}/cli/libsh-parse.cpp)
 
 if(NOT EXISTS "${TS_STDLIB_TOML_C}" OR NOT EXISTS "${TS_STDLIB_ISOCLINE_C}")
   message(FATAL_ERROR "Termscript stdlib requires the bundled tomlc99/isocline sources")
+endif()
+if(NOT EXISTS "${TS_STDLIB_LIBSHELL}/include/LibShell-Posix.hpp"
+   OR NOT EXISTS "${TS_STDLIB_LIBSHELL}/cli/libsh-parse.cpp")
+  message(FATAL_ERROR "Termscript std.shell requires the bundled libshell sources")
 endif()
 
 find_package(PkgConfig REQUIRED)
@@ -70,8 +82,10 @@ add_library(termscript_stdlib STATIC
   ${TS_STDLIB_SOURCES}
   ${TS_STDLIB_TOML_C}
   ${TS_STDLIB_ISOCLINE_C}
+  ${TS_STDLIB_SHELL_PARSER}
 )
 add_library(termscript::stdlib ALIAS termscript_stdlib)
+target_compile_features(termscript_stdlib PRIVATE cxx_std_20)
 
 target_include_directories(termscript_stdlib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>
@@ -83,6 +97,9 @@ target_include_directories(termscript_stdlib PRIVATE
   ${TS_STDLIB_ISOCLINE_INC}
   ${CMAKE_CURRENT_BINARY_DIR}
 )
+target_include_directories(termscript_stdlib SYSTEM PRIVATE
+  ${TS_STDLIB_LIBSHELL}/include
+  ${TS_STDLIB_LIBSHELL}/cli)
 # Reuse isocline's MIT-licensed CSS color-name data, rather than maintaining
 # a second palette. Only RGB entries (standard CSS names) are selected.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/isocline/src/bbcode_colors.c"
@@ -113,7 +130,18 @@ foreach(pkg IN ITEMS TS_UTF8PROC TS_FRIBIDI TS_FONTCONFIG TS_FREETYPE TS_HARFBUZ
   list(APPEND TS_DRIVER_NATIVE_FLAGS ${${pkg}_LDFLAGS_OTHER})
   list(APPEND TS_DRIVER_STATIC_FLAGS ${${pkg}_STATIC_LDFLAGS})
 endforeach()
+# Generated units remain C; their separate C linker needs the C++ runtime
+# selected by this build's C++ compiler (libstdc++ or libc++).
+set(TS_STDLIB_CXX_LIBS "")
+foreach(lib IN LISTS CMAKE_CXX_IMPLICIT_LINK_LIBRARIES)
+  if(lib MATCHES "^(stdc\\+\\+|c\\+\\+|c\\+\\+abi)$")
+    list(APPEND TS_DRIVER_NATIVE_FLAGS "-l${lib}")
+    list(APPEND TS_DRIVER_STATIC_FLAGS "-l${lib}")
+    string(APPEND TS_STDLIB_CXX_LIBS " -l${lib}")
+  endif()
+endforeach()
 list(APPEND TS_DRIVER_NATIVE_FLAGS -lm)
+list(APPEND TS_DRIVER_STATIC_FLAGS -lm)
 set(TERMSCRIPT_NATIVE_FLAGS ${TS_DRIVER_NATIVE_FLAGS} PARENT_SCOPE)
 set(TERMSCRIPT_STATIC_FLAGS ${TS_DRIVER_STATIC_FLAGS} PARENT_SCOPE)
 
@@ -131,7 +159,7 @@ target_compile_definitions(termscript_stdlib PRIVATE
   _GNU_SOURCE
 )
 
-set_source_files_properties(${TS_STDLIB_TOML_C} ${TS_STDLIB_ISOCLINE_C}
+set_source_files_properties(${TS_STDLIB_TOML_C} ${TS_STDLIB_ISOCLINE_C} ${TS_STDLIB_SHELL_PARSER}
   PROPERTIES COMPILE_OPTIONS "-w")
 
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -201,3 +229,5 @@ endforeach ()
 
 install(FILES buffer/allocator.h buffer/dommemtk_adapter.hpp
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript/stdlib/buffer)
+install(FILES shell/README.md
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/shell)

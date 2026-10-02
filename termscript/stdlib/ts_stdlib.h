@@ -61,6 +61,7 @@
 #include "rules/rules.h"
 #include "sched/sched.h"
 #include "screen/screen.h"
+#include "shell/shell.h"
 #include "signal/signal.h"
 #include "socket/socket.h"
 #include "stream/stream.h"
@@ -90,7 +91,7 @@ extern "C"
 #endif
 
 /* Number of bundled native modules. */
-#define TS_STDLIB_NMODULES 63
+#define TS_STDLIB_NMODULES 64
 /* Metadata is borrowed immutable static storage; out-of-range returns NULL. */
 size_t ts_stdlib_module_count (void);
 const TS_Module *ts_stdlib_module_at (size_t index);
