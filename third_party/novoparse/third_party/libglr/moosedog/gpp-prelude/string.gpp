@@ -1,0 +1,7 @@
+/* string.gpp -- string helpers for spec metadata. */
+#mode standard C
+#ifndef MOOSEDOG_GPP_STRING_INCLUDED
+#define MOOSEDOG_GPP_STRING_INCLUDED
+#define MD_EMPTY ""
+#define MD_CONCAT2(a, b) a b
+#endif

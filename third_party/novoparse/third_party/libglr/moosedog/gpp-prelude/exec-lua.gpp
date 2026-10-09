@@ -1,0 +1,6 @@
+/* exec-lua.gpp -- Lua query conventions (runner-side, see lua-prelude). */
+#mode standard C
+#ifndef MOOSEDOG_GPP_EXEC_LUA_INCLUDED
+#define MOOSEDOG_GPP_EXEC_LUA_INCLUDED
+#define MD_LUA_QUERY_SUFFIX ".lua"
+#endif

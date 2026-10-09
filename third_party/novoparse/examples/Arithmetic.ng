@@ -1,0 +1,15 @@
+%grammar Arithmetic;
+%start expression;
+%skip /[ \t\r\n]+/;
+%token NUMBER /[0-9]+/;
+%left "+" "-";
+%left "*" "/";
+%right "^";
+
+expression: expression "+" expression => Add
+          | expression "-" expression => Subtract
+          | expression "*" expression => Multiply
+          | expression "/" expression => Divide
+          | expression "^" expression => Power
+          | "(" expression ")" => Group
+          | NUMBER => Number;

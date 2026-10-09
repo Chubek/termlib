@@ -1,0 +1,13 @@
+%grammar JSON;
+%start value;
+%skip /[ \t\r\n]+/;
+%token STRING /"([^"\\[:cntrl:]]|\\(["\\\/bfnrt]|u[0-9a-fA-F]{4}))*"/;
+%token NUMBER /-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/;
+
+value: object | array | STRING => String | NUMBER => Number
+     | "true" => True | "false" => False | "null" => Null;
+object: "{" members? "}" => Object;
+members: member ("," member)* => Members;
+member: STRING ":" value => Member;
+array: "[" elements? "]" => Array;
+elements: value ("," value)* => Elements;

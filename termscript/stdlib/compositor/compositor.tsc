@@ -1,0 +1,1 @@
+const compositor_m = G:load "std.compositor";

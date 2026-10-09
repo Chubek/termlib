@@ -1,0 +1,4 @@
+(rewrite
+  (name "isolate-terminals")
+  (rules
+    (isolate-terminals)))

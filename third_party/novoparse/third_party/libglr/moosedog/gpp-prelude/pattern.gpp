@@ -1,0 +1,8 @@
+/* pattern.gpp -- shared lexical pattern shorthands for .grm specs. */
+#mode standard C
+#ifndef MOOSEDOG_GPP_PATTERN_INCLUDED
+#define MOOSEDOG_GPP_PATTERN_INCLUDED
+#define MD_WS "[ \t\r\n]+"
+#define MD_DIGITS "[0-9]+"
+#define MD_IDENT "[A-Za-z_][A-Za-z_0-9]*"
+#endif

@@ -1,0 +1,21 @@
+/**
+ * @file README.dox
+ * @brief Overview of the built-in disambiguation library.
+ *
+ * @ingroup disambstd_api
+ *
+ * The `disambstd` directory contains the standard ambiguity-resolution
+ * strategies that can be attached to a `glr_parser_t` through
+ * `glr_parser_add_disambiguator()`.
+ *
+ * All twenty strategies share the named/enum factory and options in
+ * `include/glr/disambstd.h`. Runtime families include operator selection,
+ * predicates, semantics, memoized costs, probability, attributes, lexical
+ * restrictions, layout, island coverage, name resolution, and post-parse
+ * filtering. SAT/SMT bounded analysis and counterexample-guided refinement
+ * also expose a standalone grammar-analysis API with witness reports.
+ *
+ * See `disambstd/README.md` for callback contracts, bounds, examples, and
+ * downstream CMake integration. Legacy factories in
+ * `include/glr/disambiguate.h` remain supported.
+ */

@@ -1,0 +1,6 @@
+# CMakeLists.@BASE@.txt -- template for generated-parser builds.
+cmake_minimum_required(VERSION 3.16)
+project(@BASE@_parser C)
+find_package(libglr 1.0 REQUIRED)
+add_library(@BASE@_parser STATIC @BASE@.parser.c)
+target_link_libraries(@BASE@_parser PUBLIC libglr::libglr)

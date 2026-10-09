@@ -1,0 +1,18 @@
+%YAML 1.2
+---
+name: Moosedog
+file_extensions: [grm]
+scope: source.moosedog
+contexts:
+  main:
+    - match: '\b(Entrypoint|AST|Lexical|Syntactic)\b'
+      scope: entity.name.section.moosedog
+    - match: '\b(Rule|Alt|Node|Field|Skip|Token|Option)\b'
+      scope: keyword.control.moosedog
+    - match: '"(\\.|[^"\\])*"'
+      scope: string.quoted.double.moosedog
+    - match: '/\*'
+      push: comment
+  comment:
+    - match: '\*/'
+      pop: true

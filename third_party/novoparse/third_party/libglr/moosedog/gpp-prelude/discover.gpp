@@ -1,0 +1,6 @@
+/* discover.gpp -- file discovery helpers (documented, no shell-out). */
+#mode standard C
+#ifndef MOOSEDOG_GPP_DISCOVER_INCLUDED
+#define MOOSEDOG_GPP_DISCOVER_INCLUDED
+#define MD_SPEC_DIR_DEFAULT "."
+#endif

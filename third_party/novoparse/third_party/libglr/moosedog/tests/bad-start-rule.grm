@@ -1,0 +1,35 @@
+/* bad-start-rule.grm -- negative fixture: StartRule names no rule. */
+Entrypoint
+{
+    LanguageInfo
+    {
+        Name = "Bad"
+        Type = LanguageType("Test")
+    }
+    Config { MainLexer = "Scannerless" }
+}
+
+AST
+{
+    Node(X)
+    {
+        Tag = "x_t"
+        Kind = Leaf
+        Fields = {}
+    }
+}
+
+Lexical
+{
+    Token(A) { Pattern = "a" Literal = Yes }
+}
+
+Syntactic
+{
+    StartRule = "Missing"
+
+    Rule(Real) -> X
+    {
+        Alt { Seq = "A" Action = "return $1;" }
+    }
+}

@@ -1,0 +1,6 @@
+/* printf.gpp -- diagnostic formatting helpers (spec-time only). */
+#mode standard C
+#ifndef MOOSEDOG_GPP_PRINTF_INCLUDED
+#define MOOSEDOG_GPP_PRINTF_INCLUDED
+#define MD_NOTE(msg) /* NOTE: msg */
+#endif

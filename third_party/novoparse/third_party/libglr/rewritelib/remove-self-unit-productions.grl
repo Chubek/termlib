@@ -1,0 +1,4 @@
+(rewrite
+  (name "remove-self-unit-productions")
+  (rules
+    (remove-self-unit-productions)))

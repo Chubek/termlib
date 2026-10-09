@@ -1,0 +1,8 @@
+/* functions.gpp -- Entrypoint helper aliases (resolved by the frontend). */
+#mode standard C
+#ifndef MOOSEDOG_GPP_FUNCTIONS_INCLUDED
+#define MOOSEDOG_GPP_FUNCTIONS_INCLUDED
+#define MD_LANG_TYPE(t) LanguageType(t)
+#define MD_URL(u) URL(u)
+#define MD_LICENSE(n) GetLicense(n)
+#endif

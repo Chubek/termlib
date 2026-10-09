@@ -49,3 +49,11 @@ cmake --install build --prefix /tmp/termlib-install
 ```
 
 The manual chapters should appear below `/tmp/termlib-install/share/doc/Termlib/manual`.
+## QBE/Keystone native backend
+
+Linux x86-64 builds enable `TERMSCRIPT_NATIVE` by default, building the bundled
+QBE executable and Keystone assembler library. A C++ compiler is required for
+Keystone. Use `-DTERMSCRIPT_NATIVE=OFF` to omit this toolchain. Install the
+`termscript-qbe` executable together with `termscript`; native executable
+linking also needs the usual runtime libraries and a C compiler driver.
+See [native compilation](manual/23-native-compilation.md) for usage.

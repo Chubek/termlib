@@ -1,0 +1,11 @@
+/* macros.gpp -- Moosedog GPP prelude (grammar-spec macros).
+ * License: MIT. GPP-safe: no cpp #/## operators.
+ */
+#mode standard C
+#ifndef MOOSEDOG_GPP_MACROS_INCLUDED
+#define MOOSEDOG_GPP_MACROS_INCLUDED
+#define MOOSEDOG_PRELUDE_macros 1
+#define MD_STRING(x) x
+#define MD_VERSION(major, minor, patch) major.minor.patch
+#define MD_GRAMMAR_ID(name, ver) name "-" ver
+#endif

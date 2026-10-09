@@ -774,6 +774,11 @@ DT_Status dt_termscript_run_file (DT_TermVM *vm, const char *path,
 const char *dt_termscript_compile_to_c (DT_TermVM *vm, const char *source,
                                         const char *unit_name,
                                         DT_Error *error);
+/* Direct QBE IL; borrowed until the next compile or VM free. Uses the same
+ * compile-time imports and runtime semantics as the C backend. Defines
+ * ts_qbe_run(vm, error), returning DT_Status; no main is emitted. */
+const char *dt_termscript_compile_to_qbe (DT_TermVM *vm, const char *source,
+                                        DT_Error *error);
 /* Compiled-code runtime for generated C (mirrors ts_rt_*; `line` feeds
  * error offsets).  dt_rt_set adopts *val on success. */
 DT_Status dt_rt_call (DT_TermVM *vm, const DT_TermValue *mod,

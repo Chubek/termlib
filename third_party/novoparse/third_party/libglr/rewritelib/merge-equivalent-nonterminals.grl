@@ -1,0 +1,4 @@
+(rewrite
+  (name "merge-equivalent-nonterminals")
+  (rules
+    (merge-equivalent-nonterminals)))

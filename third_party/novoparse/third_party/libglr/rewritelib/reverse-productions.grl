@@ -1,0 +1,4 @@
+(rewrite
+  (name "reverse-productions")
+  (rules
+    (reverse-productions)))

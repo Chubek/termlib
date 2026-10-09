@@ -1,0 +1,7 @@
+# Makefile.@BASE@ -- template for generated-parser builds.
+CC ?= cc
+CFLAGS ?= -std=c11 -Wall -Wextra
+OBJS = @BASE@.parser.o
+all: lib@BASE@_parser.a
+lib@BASE@_parser.a: $(OBJS)
+	ar rcs $@ $(OBJS)

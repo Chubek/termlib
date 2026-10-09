@@ -1,0 +1,7 @@
+/* quality-of-life.gpp -- small conveniences for spec authors. */
+#mode standard C
+#ifndef MOOSEDOG_GPP_QOL_INCLUDED
+#define MOOSEDOG_GPP_QOL_INCLUDED
+#define MD_YES true
+#define MD_NO false
+#endif

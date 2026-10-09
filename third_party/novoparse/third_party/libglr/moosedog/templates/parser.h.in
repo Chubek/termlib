@@ -1,0 +1,10 @@
+/* @BASE@.parser.h -- template for Moosedog parser headers. */
+#ifndef @GUARD@_PARSER_H
+#define @GUARD@_PARSER_H
+#include "Moosedog.h"
+#include "@BASE@.ast.h"
+#include "@BASE@.lexer.h"
+#include <glr/glr.h>
+glr_grammar_t *@BASE@_build_grammar (char *error, size_t error_size);
+glr_parser_t *@BASE@_create_parser (glr_grammar_t *grammar);
+#endif

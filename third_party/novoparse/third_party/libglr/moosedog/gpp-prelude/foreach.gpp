@@ -1,0 +1,7 @@
+/* foreach.gpp -- list iteration helpers for spec authors. */
+#mode standard C
+#ifndef MOOSEDOG_GPP_FOREACH_INCLUDED
+#define MOOSEDOG_GPP_FOREACH_INCLUDED
+#define MD_FIRST(a, b) a
+#define MD_SECOND(a, b) b
+#endif

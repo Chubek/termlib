@@ -28,10 +28,13 @@
 #include "cell/cell.h"
 #include "codec/codec.h"
 #include "color/color.h"
+#include "compositor/compositor.h"
 #include "css/css.h"
 #include "csv/csv.h"
 #include "draw/draw.h"
+#include "drm/drm.h"
 #include "edit_history/edit_history.h"
+#include "emulator/emulator.h"
 #include "env/env.h"
 #include "exec/exec.h"
 #include "expect/expect.h"
@@ -53,6 +56,7 @@
 #include "notify/notify.h"
 #include "panel/panel.h"
 #include "pipe/pipe.h"
+#include "poll/poll.h"
 #include "pty/pty.h"
 #include "prompt/prompt.h"
 #include "prompt_string/prompt_string.h"
@@ -83,6 +87,7 @@
 #include "vterm/vterm.h"
 #include "widget/widget.h"
 #include "word_motion/word_motion.h"
+#include "x11/x11.h"
 #include "yaml/yaml.h"
 
 #ifdef __cplusplus
@@ -91,7 +96,7 @@ extern "C"
 #endif
 
 /* Number of bundled native modules. */
-#define TS_STDLIB_NMODULES 64
+#define TS_STDLIB_NMODULES 69
 /* Metadata is borrowed immutable static storage; out-of-range returns NULL. */
 size_t ts_stdlib_module_count (void);
 const TS_Module *ts_stdlib_module_at (size_t index);

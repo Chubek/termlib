@@ -206,6 +206,12 @@ TS_Status ts_check_syntax (const char *source, TS_Error *error);
  * natives are used); the Termlib backend links the full closure. */
 const char *ts_vm_compile_to_c (TS_VM *vm, const char *source,
                                 const char *unit_name, TS_Error *error);
+/* Direct QBE IL backend. Same ownership, import, threading and runtime
+ * contracts as compile_to_c. dt_mode selects the Termlib runtime ABI;
+ * otherwise link the standalone runtime. Defines ts_qbe_run(vm, error),
+ * returning a status; callers supply their own main/embedding wrapper. */
+const char *ts_vm_compile_to_qbe (TS_VM *vm, const char *source,
+                                bool dt_mode, TS_Error *error);
 
 /* Compiled-code runtime: helpers emitted C calls into.  `line` is the
  * Termscript source line carried into error offsets (0 when unknown).

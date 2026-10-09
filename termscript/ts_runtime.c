@@ -3472,6 +3472,8 @@ ts_vm_compile_to_c (TS_VM *vm, const char *source,
   return r;
 }
 
+#include "ts_qbe.inc"
+
 /* Termlib-flavored compile on a standalone VM (shared emitter).  Used
  * by dt_termscript_compile_to_c via the inner TS VM. */
 const char *

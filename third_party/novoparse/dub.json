@@ -1,0 +1,14 @@
+{
+	"description": "A profile-driven GLR parser generator backed by libglr",
+	"license": "MIT",
+	"authors": [
+		"Chubak Bidpaa"
+	],
+	"copyright": "Copyright © 2026, Chubak Bidpaa",
+	"name": "novoparse",
+	"targetType": "executable",
+	"stringImportPaths": ["profiles"],
+	"buildTypes": {
+		"unittest": {"sourceFiles": ["tests/frontend.d"]}
+	}
+}

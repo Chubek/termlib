@@ -1,0 +1,7 @@
+/* @BASE@.parser.c -- template for Moosedog grammar builders.
+ * The emitter expands @BUILD_BODY@ into terminal/nonterminal/production
+ * registration plus trivia and adaptive-lookahead wiring. */
+#include "@BASE@.parser.h"
+#include <glr/scannerless.h>
+#include <string.h>
+@BUILD_BODY@

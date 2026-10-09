@@ -1,6 +1,7 @@
 /* std.vterm -- incremental VT/UTF-8 parsing over styled Unicode cells. */
 #include "vterm/vterm.h"
 #include "common/grid.h"
+#include "common/emulator.h"
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -376,6 +377,22 @@ feed_byte (vterm_t *v, unsigned char c, TS_Error *e)
   return TS_OK;
 }
 
+const ts_grid_t *
+ts_vterm_grid (const TS_Value *value, size_t *row, size_t *col, bool *cursor, TS_Error *e)
+{
+  vterm_t *v = unwrap (value, e); if (!v) return NULL;
+  *row = v->row; *col = v->col; *cursor = v->cursor_visible;
+  return &v->grid;
+}
+TS_Status
+ts_vterm_bytes (const TS_Value *value, const char *bytes, size_t len, TS_Error *e)
+{
+  vterm_t *v = unwrap (value, e); if (!v) return TS_ERR_INVAL;
+  if (len > TS_TEXT_LIMIT) { ts_error_set (e, TS_ERR_LIMIT, 0, 0, "feed exceeds 1 MiB"); return TS_ERR_LIMIT; }
+  for (size_t i = 0; i < len; i++) { TS_Status st = feed_byte (v, (unsigned char) bytes[i], e); if (st) return st; }
+  return TS_OK;
+}
+
 static TS_Status
 vt_new (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error *e)
 {
@@ -440,6 +457,27 @@ vt_get (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Erro
   if (op == 4) { reset (v); ts_std_ret_nil (ret); }
   else if (op == 5) ts_std_ret_bool (ret, v->cursor_visible);
   else ts_std_ret_int (ret, (int64_t) (op == 6 ? v->grid.rows : v->grid.cols));
+  return TS_OK;
+}
+
+TS_Status
+ts_vterm_resized (const TS_Value *a, size_t rows, size_t cols, TS_Value *ret, TS_Error *e)
+{
+  vterm_t *v = unwrap (a, e), *copy;
+  TS_Status st;
+  if (!v) return TS_ERR_INVAL;
+  copy = malloc (sizeof *copy); if (!copy) return ts_std_oom (e);
+  *copy = *v; memset (&copy->grid, 0, sizeof copy->grid); memset (&copy->alternate, 0, sizeof copy->alternate);
+  st = ts_grid_init (&copy->grid, (int64_t) rows, (int64_t) cols, e);
+  if (!st && v->alternate.cells) st = ts_grid_init (&copy->alternate, (int64_t) rows, (int64_t) cols, e);
+  if (st) { vt_free (copy); return st; }
+  for (size_t r = 0; r < rows && r < v->grid.rows; r++)
+    for (size_t c = 0; c < cols && c < v->grid.cols; c++)
+      { ts_grid_put_cell (&copy->grid, r, c, &v->grid.cells[r*v->grid.cols+c]);
+        if (copy->alternate.cells) ts_grid_put_cell (&copy->alternate, r, c, &v->alternate.cells[r*v->grid.cols+c]); }
+  copy->row = clamp (v->row, rows-1); copy->col = clamp (v->col, cols-1);
+  copy->top = 0; copy->bottom = rows-1; copy->pending_wrap = false; break_cluster (copy);
+  if (ts_value_make_handle (ret, copy, vt_free, "<vterm>", &vterm_tag)) { vt_free (copy); return ts_std_oom (e); }
   return TS_OK;
 }
 

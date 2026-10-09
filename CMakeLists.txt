@@ -110,6 +110,17 @@ set_target_properties(termscript-driver PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 target_link_libraries(termscript-driver PRIVATE termscript)
+set(TS_NATIVE_DEFAULT OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(TS_NATIVE_DEFAULT ON)
+endif()
+option(TERMSCRIPT_NATIVE "Build QBE/Keystone native backend (Linux x86-64)" ${TS_NATIVE_DEFAULT})
+if(TERMSCRIPT_NATIVE)
+  if(NOT TS_NATIVE_DEFAULT)
+    message(FATAL_ERROR "The QBE/Keystone object writer requires Linux x86-64")
+  endif()
+  include(termscript/native.cmake)
+endif()
 set(TS_DRIVER_BUILD_LIBS "\"$<TARGET_FILE:termscript>\",\n")
 set(TS_DRIVER_INSTALL_LIBS "\"-ltermscript\",\n")
 if(TARGET termscript_stdlib)
@@ -180,10 +191,48 @@ add_custom_target(termlib-manual
 )
 
 if(BUILD_TESTING)
+  if(TERMSCRIPT_NATIVE)
+    add_test(NAME termscript_native COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/native-test
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_native.cmake)
+    set_tests_properties(termscript_native PROPERTIES TIMEOUT 60)
+  endif()
   add_executable(test_termlib_cpp tests/test_termlib_cpp.cpp)
   target_link_libraries(test_termlib_cpp PRIVATE termscript)
   add_test(NAME termlib_cpp COMMAND test_termlib_cpp)
   if(TARGET termscript_stdlib)
+    add_executable(test_termscript_emulator tests/test_termscript_emulator.c)
+    add_executable(test_termscript_compositor tests/test_termscript_compositor.c)
+    target_compile_definitions(test_termscript_compositor PRIVATE _GNU_SOURCE)
+    target_link_libraries(test_termscript_compositor PRIVATE termscript_stdlib)
+    add_test(NAME termscript_compositor COMMAND test_termscript_compositor)
+    set_tests_properties(termscript_compositor PROPERTIES TIMEOUT 30)
+    add_test(NAME termscript_compositor_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_compositor.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/compositor-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE}
+      "-DMARKER=compositor and emulator OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    target_compile_definitions(test_termscript_emulator PRIVATE _GNU_SOURCE)
+    target_link_libraries(test_termscript_emulator PRIVATE termscript_stdlib Threads::Threads)
+    add_test(NAME termscript_emulator COMMAND test_termscript_emulator)
+    set_tests_properties(termscript_emulator PROPERTIES TIMEOUT 15)
+    find_program(TERMSCRIPT_XVFB_RUN xvfb-run)
+    if(TERMSCRIPT_XVFB_RUN AND TERMSCRIPT_X11 AND TARGET PkgConfig::TS_X11)
+      add_test(NAME termscript_x11 COMMAND ${TERMSCRIPT_XVFB_RUN} -a $<TARGET_FILE:test_termscript_emulator> --x11)
+      add_test(NAME termscript_compositor_x11 COMMAND ${TERMSCRIPT_XVFB_RUN} -a $<TARGET_FILE:test_termscript_compositor> --x11)
+      set_tests_properties(termscript_compositor_x11 PROPERTIES TIMEOUT 30)
+      set_tests_properties(termscript_x11 PROPERTIES TIMEOUT 15)
+    endif()
+    add_test(NAME termscript_emulator_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_emulator.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/emulator-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE}
+      "-DMARKER=emulator modules OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
     add_executable(test_termscript_stdlib tests/test_termscript_stdlib.c)
     target_compile_definitions(test_termscript_stdlib PRIVATE _GNU_SOURCE)
     target_link_libraries(test_termscript_stdlib PRIVATE termscript_stdlib)
@@ -196,11 +245,13 @@ if(BUILD_TESTING)
       -DDRIVER=$<TARGET_FILE:termscript-driver>
       -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_terminal.tsc
       -DWORK=${CMAKE_CURRENT_BINARY_DIR}/backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
     add_test(NAME termscript_shell_backends COMMAND ${CMAKE_COMMAND}
       -DDRIVER=$<TARGET_FILE:termscript-driver>
       -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_shell.tsc
       -DWORK=${CMAKE_CURRENT_BINARY_DIR}/shell-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE}
       "-DMARKER=shell stdlib OK"
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
     set_tests_properties(termscript_stdlib termscript_backends termscript_shell

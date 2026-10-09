@@ -1,0 +1,6 @@
+/* @BASE@.lexer.h -- template for Moosedog lexer headers. */
+#ifndef @GUARD@_LEXER_H
+#define @GUARD@_LEXER_H
+#include <stddef.h>
+typedef enum @BASE@_token_kind { @TOKENS@ } @BASE@_token_kind_t;
+#endif

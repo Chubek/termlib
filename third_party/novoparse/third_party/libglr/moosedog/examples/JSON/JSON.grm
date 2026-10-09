@@ -1,0 +1,473 @@
+Entrypoint 
+{
+   LanguageInfo
+   {
+	Name = "JSON"
+	Type = LanguageType("DataExchange")
+	Standard = URL("https://json.org")
+   }
+
+   GrammarInfo
+   {
+	Authors =
+	{
+	    "Chubak Bidpaa <chubakbidpaa@riseup.net>",
+	    "Sami Dena <sami.dena1993@gmail.com>"
+	}
+
+	License = GetLicense("MIT")
+
+	RevisionHistory =
+	{
+	    "v1.0.0-2026/10/05-Initial Version"
+	}
+   }
+
+   Disambiguators =
+   {
+	ImportDisamb("disambstd.case_sensitivity.c", "%IsCaseSensitive")
+   }
+
+   Rewriters =
+   {
+	ImportRewriter("rewritelib.eliminate_unproductive_symbols.grl"),
+	ImportRewriter("rewritelib.eliminate_unreachable_symbols.grl"),
+   }
+
+   Queries =
+   {
+	"PrettyPrint.lua",
+	"Linter.lua"
+   }
+
+   Config
+   {
+        MainLexer        = "PCRE2"
+        FallbackLexer    = "Scannerless"
+ 	UseATN	         = true
+        UseIncremental   = false
+        UseCache         = true
+        CacheDirectory   = "${TMPDIR}/MoosedogCache"
+	MainAllocator    = Allocators("MemTkX")
+	FallbackAllocator= Allocators("mimalloc")
+
+	EmitASTListener   = true
+	EmitASTVisitor    = true
+
+	CacheLexer        = true
+	CacheParser       = false
+
+        /* Error recovery — continue after up to N syntax errors. */
+        ErrorRecovery    = true
+        MaxErrors        = 10
+        RecoveryStrategy = RecoveryMode("PanicMode")
+
+        /* Output. */
+        OutputEncoding   = "UTF-8"
+        StrictUnicode    = true
+
+        /* Debugging and annotation. */
+        DebugLevel       = 0
+        ASTAnnotations   = false
+   }
+
+   Optparse
+   {
+        /* ---------------------------------------------------------- *
+         *  Each Option(...) entry corresponds to one CLI flag.        *
+         *  Define = "X" sets the preprocessor symbol X, which the    *
+         *  CompilePipeline @ifdef/@ifndef guards already reference.   *
+         * ---------------------------------------------------------- */
+
+        Option("--alt-preprocessor")
+	{
+	    Short       = "-H"
+	    Define      = "JSON_PREPROCESSOR"
+	    Type        = String
+	    Default     = "${MOOSEDOG_SPEC_DIR}/Support.gpp"
+	    Description = "Alternative preprocessor"
+	}
+
+        Option("--no-rewrite")
+        {
+            Short       = "-R"
+            Define      = "JSON_PARSER_NO_REWRITE"
+            Type        = Bool
+            Default     = false
+            Description = "Skip all rewrite passes after parsing."
+        }
+
+        Option("--emit-makefile")
+        {
+            Short       = "-M"
+            Define      = "JSON_PARSER_EMIT_MAKEFILE"
+            Type        = Bool
+            Default     = false
+            Description = "Emit a GNU Makefile for the generated parser."
+        }
+
+        Option("--emit-cmakefile")
+        {
+            Short       = "-C"
+            Define      = "JSON_PARSER_EMIT_CMAKEFILE"
+            Type        = Bool
+            Default     = false
+            Description = "Emit a CMakeLists.txt for the generated parser."
+        }
+
+        Option("--debug")
+        {
+            Short       = "-d"
+            Define      = "JSON_PARSER_DEBUG"
+            Type        = Bool
+            Default     = false
+            Description = "Enable debug annotations in the generated AST code."
+        }
+
+        Option("--max-errors")
+        {
+            Short       = "-e"
+            Define      = "JSON_PARSER_MAX_ERRORS"
+            Type        = Int
+            Default     = 10
+            Range       = IntRange(1, 256)
+            Description = "Maximum number of syntax errors before aborting."
+            Bind        = Config.MaxErrors
+        }
+
+        Option("--no-cache")
+        {
+            Short       = "-X"
+            Define      = "JSON_PARSER_NO_CACHE"
+            Type        = Bool
+            Default     = false
+            Description = "Disable the parse-table cache."
+            Bind        = Config.UseCache
+            BindInvert  = true
+        }
+
+        Option("--cache-dir")
+        {
+            Short       = "-T"
+            Define      = "JSON_PARSER_CACHE_DIR"
+            Type        = Path
+            Default     = ""
+            Description = "Override the cache directory (default: system temp)."
+            Bind        = Config.CacheDirectory
+        }
+
+        Option("--strict-unicode")
+        {
+            Short       = "-u"
+            Define      = "JSON_PARSER_STRICT_UNICODE"
+            Type        = Bool
+            Default     = true
+            Description = "Reject input with ill-formed UTF-8 sequences."
+            Bind        = Config.StrictUnicode
+        }
+
+        Option("--output-dir")
+        {
+            Short       = "-o"
+            Define      = "JSON_PARSER_OUTPUT_DIR"
+            Type        = Path
+            Default     = "."
+            Description = "Directory where generated .parser.* and .ast.* files are written."
+        }
+   }
+   
+
+   @ifndef JSON_PARSER_NO_ACTION
+	   Preprocess()
+	   Rewrite()
+	   CompileAST()
+	   CompileLexer()
+	   CompileParser()
+	   WriteFiles()
+	   RunUnitTests()
+   @endif
+}
+
+
+
+AST 
+{
+    /* ------------------------------------------------------------------ *
+     *  Union root — every JSON value is one of these six variants.        *
+     * ------------------------------------------------------------------ */
+    Node(JsonValue)
+    {
+        Tag      = "json_value_t"
+        Kind     = Union
+        Variants =
+        {
+            "JsonObject",
+            "JsonArray",
+            "JsonString",
+            "JsonNumber",
+            "JsonBool",
+            "JsonNull"
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  { "key": value, ... }                                              *
+     * ------------------------------------------------------------------ */
+    Node(JsonObject)
+    {
+        Tag    = "json_object_t"
+        Kind   = Struct
+        Fields =
+        {
+            Field("members") { Type = "JsonMember*", Arity = Many }
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Key-value pair inside an object.                                   *
+     * ------------------------------------------------------------------ */
+    Node(JsonMember)
+    {
+        Tag    = "json_member_t"
+        Kind   = Struct
+        Fields =
+        {
+            Field("key")   { Type = "JsonString*", Arity = One }
+            Field("value") { Type = "JsonValue*",  Arity = One }
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  [ value, ... ]                                                     *
+     * ------------------------------------------------------------------ */
+    Node(JsonArray)
+    {
+        Tag    = "json_array_t"
+        Kind   = Struct
+        Fields =
+        {
+            Field("elements") { Type = "JsonValue*", Arity = Many }
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Leaf nodes.                                                        *
+     * ------------------------------------------------------------------ */
+    Node(JsonString)
+    {
+        Tag    = "json_string_t"
+        Kind   = Leaf
+        Fields =
+        {
+            /* Decoded UTF-8 content, escape sequences already resolved. */
+            Field("value") { Type = "char*", Arity = One }
+        }
+    }
+
+    Node(JsonNumber)
+    {
+        Tag    = "json_number_t"
+        Kind   = Leaf
+        Fields =
+        {
+            /* Stored as IEEE-754 double to cover integer and float forms. */
+            Field("value") { Type = "double", Arity = One }
+        }
+    }
+
+    Node(JsonBool)
+    {
+        Tag    = "json_bool_t"
+        Kind   = Leaf
+        Fields =
+        {
+            /* 1 for true, 0 for false. */
+            Field("value") { Type = "int", Arity = One }
+        }
+    }
+
+    Node(JsonNull)
+    {
+        Tag    = "json_null_t"
+        Kind   = Leaf
+        Fields = {}
+    }
+}
+
+Lexical
+{
+    /* ------------------------------------------------------------------ *
+     *  Skipped tokens — whitespace is insignificant in JSON.             *
+     * ------------------------------------------------------------------ */
+    Skip(WHITESPACE)
+    {
+        Pattern = "[ \t\r\n]+"
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Literal keywords — case-sensitive per %IsCaseSensitive.           *
+     * ------------------------------------------------------------------ */
+    Token(TOK_TRUE)
+    {
+        Pattern = "true"
+        Literal = Yes
+    }
+
+    Token(TOK_FALSE)
+    {
+        Pattern = "false"
+        Literal = Yes
+    }
+
+    Token(TOK_NULL)
+    {
+        Pattern = "null"
+        Literal = Yes
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Structural punctuation.                                            *
+     * ------------------------------------------------------------------ */
+    Token(TOK_LBRACE)   { Pattern = "{"  Literal = Yes }
+    Token(TOK_RBRACE)   { Pattern = "}"  Literal = Yes }
+    Token(TOK_LBRACKET) { Pattern = "["  Literal = Yes }
+    Token(TOK_RBRACKET) { Pattern = "]"  Literal = Yes }
+    Token(TOK_COMMA)    { Pattern = ","  Literal = Yes }
+    Token(TOK_COLON)    { Pattern = ":"  Literal = Yes }
+
+    /* ------------------------------------------------------------------ *
+     *  String — double-quoted, with escape sequences defined by RFC 8259. *
+     *                                                                     *
+     *  Accepted escapes: \" \\ \/ \b \f \n \r \t \uXXXX                 *
+     * ------------------------------------------------------------------ */
+    Token(TOK_STRING)
+    {
+        Pattern = "\"([^\"\\\\\x00-\x1f]|\\\\[\"\\\\/bfnrt]|\\\\u[0-9A-Fa-f]{4})*\""
+        Literal = No
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Number — integer or floating-point with optional exponent.         *
+     *                                                                     *
+     *  -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?                   *
+     *                                                                     *
+     *  Leading zeros (other than bare 0) and bare + prefix are rejected  *
+     *  implicitly by the pattern.                                        *
+     * ------------------------------------------------------------------ */
+    Token(TOK_NUMBER)
+    {
+        Pattern = "-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?"
+        Literal = No
+    }
+}
+
+
+Syntactic
+{
+    StartRule = "Json"
+
+    /* ------------------------------------------------------------------ *
+     *  Json — the top-level entry point.                                  *
+     *  A well-formed JSON text is exactly one value.                      *
+     * ------------------------------------------------------------------ */
+    Rule(Json) -> JsonValue
+    {
+        Alt { Seq = "Value"   Action = "return $1;" }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Value — the six JSON value types.                                  *
+     * ------------------------------------------------------------------ */
+    Rule(Value) -> JsonValue
+    {
+        Alt { Seq = "Object"       Action = "MakeVariant(JsonObject, $1)"  }
+        Alt { Seq = "Array"        Action = "MakeVariant(JsonArray,  $1)"  }
+        Alt { Seq = "TOK_STRING"   Action = "MakeLeaf(JsonString,   $1)"   }
+        Alt { Seq = "TOK_NUMBER"   Action = "MakeLeaf(JsonNumber,   $1)"   }
+        Alt { Seq = "TOK_TRUE"     Action = "MakeLeaf(JsonBool,     1)"    }
+        Alt { Seq = "TOK_FALSE"    Action = "MakeLeaf(JsonBool,     0)"    }
+        Alt { Seq = "TOK_NULL"     Action = "MakeLeaf(JsonNull,     _)"    }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Object — empty or one-or-more comma-separated members.            *
+     * ------------------------------------------------------------------ */
+    Rule(Object) -> JsonObject
+    {
+        Alt
+        {
+            Seq    = "TOK_LBRACE TOK_RBRACE"
+            Action = "MakeNode(JsonObject, EmptyList)"
+        }
+        Alt
+        {
+            Seq    = "TOK_LBRACE Members TOK_RBRACE"
+            Action = "MakeNode(JsonObject, $2)"
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Members — left-recursive list of key-value pairs.                 *
+     * ------------------------------------------------------------------ */
+    Rule(Members) -> JsonMember*
+    {
+        Alt
+        {
+            Seq    = "Member"
+            Action = "MakeList($1)"
+        }
+        Alt
+        {
+            Seq    = "Members TOK_COMMA Member"
+            Action = "AppendList($1, $3)"
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Member — a single "key": value pair.                              *
+     *  The key must be a string per the JSON specification.              *
+     * ------------------------------------------------------------------ */
+    Rule(Member) -> JsonMember
+    {
+        Alt
+        {
+            Seq    = "TOK_STRING TOK_COLON Value"
+            Action = "MakeNode(JsonMember, MakeLeaf(JsonString, $1), $3)"
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Array — empty or one-or-more comma-separated values.             *
+     * ------------------------------------------------------------------ */
+    Rule(Array) -> JsonArray
+    {
+        Alt
+        {
+            Seq    = "TOK_LBRACKET TOK_RBRACKET"
+            Action = "MakeNode(JsonArray, EmptyList)"
+        }
+        Alt
+        {
+            Seq    = "TOK_LBRACKET Elements TOK_RBRACKET"
+            Action = "MakeNode(JsonArray, $2)"
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Elements — left-recursive list of values.                         *
+     * ------------------------------------------------------------------ */
+    Rule(Elements) -> JsonValue*
+    {
+        Alt
+        {
+            Seq    = "Value"
+            Action = "MakeList($1)"
+        }
+        Alt
+        {
+            Seq    = "Elements TOK_COMMA Value"
+            Action = "AppendList($1, $3)"
+        }
+    }
+}
+

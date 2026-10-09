@@ -1,0 +1,6 @@
+/* io.gpp -- output-directory helpers. */
+#mode standard C
+#ifndef MOOSEDOG_GPP_IO_INCLUDED
+#define MOOSEDOG_GPP_IO_INCLUDED
+#define MD_OUTDIR_DEFAULT "."
+#endif

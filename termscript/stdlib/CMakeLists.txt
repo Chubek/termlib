@@ -24,7 +24,7 @@ set(TS_STDLIB_MODULES
   array autocomp baudrate bidi buffer cell codec color css csv draw edit_history env exec expect font fsm glob html http io
   ipc json key layout list log map menu notify panel pipe pty prompt prompt_string readline regex rules
   sched screen shell signal socket stream style syntax table termcap terminfo test text_search theme
-  terminal termios toml tui utf8 verbatim vterm widget word_motion yaml
+  terminal termios toml tui utf8 verbatim vterm widget word_motion yaml drm poll x11 compositor emulator
 )
 
 set(TS_STDLIB_SOURCES
@@ -70,6 +70,38 @@ pkg_check_modules(TS_FRIBIDI REQUIRED IMPORTED_TARGET fribidi)
 pkg_check_modules(TS_FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 pkg_check_modules(TS_FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 pkg_check_modules(TS_HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
+option(TERMSCRIPT_X11 "Enable the Xlib window backend" ON)
+set(TS_EXTRA_PKGS "")
+set(TS_STDLIB_EXTRA_REQUIRES "")
+if(TERMSCRIPT_X11)
+  pkg_check_modules(TS_X11 QUIET IMPORTED_TARGET x11)
+  if(TS_X11_FOUND)
+    list(APPEND TS_EXTRA_PKGS TS_X11)
+    set(TS_STDLIB_EXTRA_REQUIRES " x11")
+  else()
+    message(STATUS "Xlib not found: std.x11.available will return false")
+  endif()
+endif()
+set(TS_DRM_DEFAULT OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(TS_DRM_DEFAULT ON)
+endif()
+option(TERMSCRIPT_DRM "Enable bundled libdrm discovery (Linux)" ${TS_DRM_DEFAULT})
+if(TERMSCRIPT_DRM)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "The bundled Termscript DRM backend requires Linux")
+  endif()
+  set(TS_DRM_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/libdrm)
+  set(TS_DRM_SOURCES "")
+  foreach(source IN ITEMS xf86drm.c xf86drmHash.c xf86drmRandom.c xf86drmSL.c xf86drmMode.c)
+    list(APPEND TS_DRM_SOURCES ${TS_DRM_ROOT}/${source})
+  endforeach()
+  # Put the core objects in the stdlib archive so generated programs have
+  # the same dependency closure as embeds, without a system libdrm dependency.
+  add_library(termscript_drm_core OBJECT ${TS_DRM_SOURCES})
+  target_include_directories(termscript_drm_core PRIVATE ${TS_DRM_ROOT} ${TS_DRM_ROOT}/include/drm)
+  target_compile_definitions(termscript_drm_core PRIVATE _GNU_SOURCE _FILE_OFFSET_BITS=64 MAJOR_IN_SYSMACROS=1)
+endif()
 
 set(LEXBOR_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(LEXBOR_BUILD_STATIC ON CACHE BOOL "" FORCE)
@@ -85,6 +117,15 @@ add_library(termscript_stdlib STATIC
   ${TS_STDLIB_SHELL_PARSER}
 )
 add_library(termscript::stdlib ALIAS termscript_stdlib)
+if(TERMSCRIPT_X11 AND TS_X11_FOUND)
+  target_compile_definitions(termscript_stdlib PRIVATE TS_STD_HAVE_X11=1)
+  target_link_libraries(termscript_stdlib PRIVATE PkgConfig::TS_X11)
+endif()
+if(TERMSCRIPT_DRM)
+  target_sources(termscript_stdlib PRIVATE $<TARGET_OBJECTS:termscript_drm_core>)
+  target_compile_definitions(termscript_stdlib PRIVATE TS_STD_HAVE_DRM=1)
+  target_include_directories(termscript_stdlib SYSTEM PRIVATE ${TS_DRM_ROOT} ${TS_DRM_ROOT}/include/drm)
+endif()
 target_compile_features(termscript_stdlib PRIVATE cxx_std_20)
 
 target_include_directories(termscript_stdlib PUBLIC
@@ -120,7 +161,7 @@ target_link_libraries(termscript_stdlib PRIVATE lexbor_static
 # native dependency closure for that process and for installed pkg-config.
 set(TS_DRIVER_NATIVE_FLAGS "-pthread")
 set(TS_DRIVER_STATIC_FLAGS "-pthread")
-foreach(pkg IN ITEMS TS_UTF8PROC TS_FRIBIDI TS_FONTCONFIG TS_FREETYPE TS_HARFBUZZ)
+foreach(pkg IN ITEMS TS_UTF8PROC TS_FRIBIDI TS_FONTCONFIG TS_FREETYPE TS_HARFBUZZ ${TS_EXTRA_PKGS})
   foreach(dir IN LISTS ${pkg}_LIBRARY_DIRS)
     list(APPEND TS_DRIVER_NATIVE_FLAGS "-L${dir}")
   endforeach()
@@ -231,3 +272,10 @@ install(FILES buffer/allocator.h buffer/dommemtk_adapter.hpp
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript/stdlib/buffer)
 install(FILES shell/README.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/shell)
+install(FILES emulator-backends.md
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib)
+install(FILES x11/window.tsc DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/x11)
+install(FILES drm/discover.tsc DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/drm)
+install(FILES compositor/README.md DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/compositor)
+install(FILES emulator/README.md emulator/terminal.tsc emulator/headless.tsc
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/emulator)

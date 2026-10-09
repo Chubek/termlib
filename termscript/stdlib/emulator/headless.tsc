@@ -1,0 +1,17 @@
+G:import "compositor";
+G:import "emulator";
+const output = compositor_m:new 640 64;
+const terminal = emulator_m:new output 4 80;
+emulator_m:spawn terminal "printf '\\033[32mHello from a composited terminal\\033[0m\\n'";
+running = true;
+while running do
+  emulator_m:pump terminal 50;
+  state = emulator_m:status terminal;
+  if G:eq state "eof" do running = false; end
+end
+emulator_m:render terminal;
+compositor_m:present output;
+const text = emulator_m:text terminal;
+G:puts text;
+emulator_m:close terminal;
+compositor_m:close output;

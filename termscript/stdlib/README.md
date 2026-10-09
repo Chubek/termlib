@@ -27,12 +27,16 @@ G:puts second;
 | `termcap` | `std.termcap` | terminfo/termcap capability aliases and simple entry encoding |
 | `text_search` | `std.text_search` | forward/backward literal search by byte offset |
 | `word_motion` | `std.word_motion` | next/previous ASCII word boundaries |
+| `x11` | `std.x11` | Xlib windows, events, rectangles and RGB image upload ([API](emulator-backends.md)) |
 | `autocomp` | `std.autocomp` | prefix completion: complete/common/rank over joined strings |
 | `codec` | `std.codec` | base64/hex/url codecs, crc32, case/trim/replace, predicates, split |
 | `color` | `std.color` | named ANSI colors, rgb, attributes, wrap |
+| `compositor` | `std.compositor` | committed ARGB surfaces, stacking, focus, headless/X11 composition ([API](compositor/README.md)) |
 | `csv` | `std.csv` | double-quote dialect parse/parse_line/field/join |
 | `draw` | `std.draw` | hline/box/bar/progress/center string builders |
+| `drm` | `std.drm` | bundled libdrm device/capability/connector discovery ([API](emulator-backends.md)) |
 | `env` | `std.env` | getenv/setenv/unset, environ list, home, pid |
+| `emulator` | `std.emulator` | PTY + VT + font-rendered compositor surfaces and terminal event loops ([API](emulator/README.md)) |
 | `exec` | `std.exec` | system/capture/ok, shell quoting |
 | `expect` | `std.expect` | spawn + deadline substring matching over pipes |
 | `fsm` | `std.fsm` | table-driven finite state machines |
@@ -49,6 +53,7 @@ G:puts second;
 | `notify` | `std.notify` | bell/title/flash strings, notify-send toast |
 | `panel` | `std.panel` | titled boxes, side-by-side columns |
 | `pipe` | `std.pipe` | popen streams as handles |
+| `poll` | `std.poll` | bounded multi-fd readiness sets and deadline-aware waits ([API](emulator-backends.md)) |
 | `pty` | `std.pty` | standalone minipty: spawn/read/write/wait/close |
 | `prompt` | `std.prompt` | reusable primary/continuation prompts and visible width |
 | `readline` | `std.readline` | line input (isocline when built in, getline fallback) + history |

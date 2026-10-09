@@ -1,0 +1,4 @@
+(rewrite
+  (name "eliminate-unused-terminals")
+  (rules
+    (eliminate-unused-terminals)))

@@ -1049,6 +1049,29 @@ dt_termscript_compile_to_c (DT_TermVM *vm, const char *source,
   return vm->compiled;
 }
 
+const char *
+dt_termscript_compile_to_qbe (DT_TermVM *vm, const char *source, DT_Error *error)
+{
+  _Static_assert (sizeof (TS_Value) == sizeof (DT_TermValue), "QBE value size");
+  _Static_assert (offsetof (TS_Value, as) == offsetof (DT_TermValue, as), "QBE value layout");
+  _Static_assert ((int) TS_INT == (int) DT_TERM_INT &&
+                  (int) TS_BOOL == (int) DT_TERM_BOOL &&
+                  (int) TS_STRING == (int) DT_TERM_STRING &&
+                  (int) TS_NIL == (int) DT_TERM_NIL, "QBE value tags");
+  TS_Error tserr;
+  const char *code;
+  char *copy;
+  if (!vm || !source)
+    { dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0, "bad arguments"); return NULL; }
+  ts_error_clear (&tserr);
+  code = ts_vm_compile_to_qbe (vm->tsvm, source, true, &tserr);
+  if (!code) { dt_convert_error (error, &tserr); return NULL; }
+  copy = strdup (code);
+  if (!copy) { dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory"); return NULL; }
+  free (vm->compiled); vm->compiled = copy;
+  return copy;
+}
+
 void
 dt_termvalue_free (DT_TermValue *value)
 {

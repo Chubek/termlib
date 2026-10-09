@@ -1,0 +1,4 @@
+(rewrite
+  (name "inline-single-production-nonterminals")
+  (rules
+    (inline-single-production-nonterminals)))

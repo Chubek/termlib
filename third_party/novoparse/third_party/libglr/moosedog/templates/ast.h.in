@@ -1,0 +1,9 @@
+/* @BASE@.ast.h -- template for Moosedog AST headers.
+ * Placeholders: @BASE@ grammar stem, @NODES@ generated structs,
+ * @ROOT@ root type. The emitter fills these in; keep guards stable. */
+#ifndef @GUARD@_AST_H
+#define @GUARD@_AST_H
+#include <stddef.h>
+@NODES@
+typedef @ROOT@ @BASE@_root_t;
+#endif

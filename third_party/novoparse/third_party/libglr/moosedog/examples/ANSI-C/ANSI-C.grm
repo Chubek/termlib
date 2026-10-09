@@ -1,0 +1,885 @@
+/*
+ * ANSI-C: a proposed Moosedog specification for C11 translation units.
+ * Input is preprocessed C (translation phases 1-4 already performed).
+ * Keep literal spellings for phase-5 decoding and phase-6 concatenation.
+ * Moosedog is not implemented. See README.md for the action/lexer contract.
+ */
+Entrypoint
+{
+    LanguageInfo
+    {
+        Name = ANSI_C_GRAMMAR_NAME
+        Type = LanguageType("ProgrammingLanguage")
+        Standard = URL("https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf")
+    }
+
+    GrammarInfo
+    {
+        Authors = { "Chubak Bidpaa <chubakbidpaa@riseup.net>" }
+        License = GetLicense("MIT")
+        RevisionHistory =
+        {
+            "v1.0.0-2026/10/06-Initial Moosedog grammar",
+            "v1.1.0-2026/10/06-C11 syntax, structural AST, adaptive lookahead"
+        }
+    }
+
+    Config
+    {
+        MainLexer = "PCRE2"
+        /* Preserve preprocessing-token boundaries with either backend. */
+        FallbackLexer = "Scannerless"
+        UseATN = ANSI_C_USE_ATN
+        UseIncremental = false
+        UseCache = false
+        EmitASTListener = true
+        EmitASTVisitor = true
+        ASTAnnotations = true
+        DebugLevel = ANSI_C_DEBUG_LEVEL
+        ErrorRecovery = false
+        OutputEncoding = "UTF-8"
+        StrictUnicode = true
+    }
+
+    /* Proposed frontend settings, mapped to real libglr APIs in README.md.
+     * Prediction is syntactic only; typedef scope and nearest-else binding
+     * must be resolved before constructing one AST from the packed forest.
+     */
+    ATN
+    {
+        AdaptiveLookahead = ANSI_C_USE_ATN
+        MaxDepth = ANSI_C_LOOKAHEAD_DEPTH
+        PreserveAmbiguity = true
+        EmitStatistics = true
+    }
+
+    Optparse
+    {
+        Option("--output-dir")
+        {
+            Short = "-o"
+            Type = Path
+            Default = "."
+            Description = "Directory for generated parser and AST files."
+        }
+        Option("--debug")
+        {
+            Short = "-d"
+            Define = "ANSI_C_DEBUG"
+            Type = Bool
+            Default = false
+            Description = "Enable generator diagnostics."
+        }
+        Option("--no-atn")
+        {
+            Define = "ANSI_C_NO_ATN"
+            Type = Bool
+            Default = false
+            Bind = Config.UseATN
+            BindInvert = true
+            Description = "Use ordinary GLR without adaptive prediction."
+        }
+        Option("--lookahead-depth")
+        {
+            Type = Int
+            Default = 8
+            Range = IntRange(1, 64)
+            Bind = ATN.MaxDepth
+            Description = "Maximum lookahead window, including the current token."
+        }
+    }
+
+    /* Support.gpp is the grammar preprocessor prelude, not the C source
+     * preprocessor. C macro expansion must precede this parser's lexer.
+     */
+    Preprocess()
+    CompileAST()
+    CompileLexer()
+    CompileParser()
+    WriteFiles()
+}
+
+AST
+{
+    /* A structural AST: punctuation and precedence-only forwarding rules
+     * disappear. Each family has a form tag and ordered semantic children.
+     * Form tags distinguish e.g. prefix/postfix increment, type/expression
+     * sizeof, array/function declarators, and the four for-loop forms.
+     * Source spans are attached by ASTAnnotations, before trivia is lost.
+     */
+    Node(CNode)
+    {
+        Tag = "c_node_t"
+        Kind = Union
+        Variants =
+        {
+            "CToken", "CUnit", "CDeclaration", "CType", "CDeclarator",
+            "CExpression", "CStatement", "CInitializer", "CSequence"
+        }
+    }
+
+    Node(CToken)
+    {
+        Tag = "c_token_t"
+        Kind = Leaf
+        Fields =
+        {
+            /* Owned token spelling; preserve suffixes and escapes exactly. */
+            Field("spelling") { Type = "char*", Arity = One }
+        }
+    }
+
+    Node(CUnit)
+    {
+        Tag = "c_unit_t"
+        Kind = Struct
+        Fields =
+        {
+            Field("declarations") { Type = "CNode*", Arity = Many }
+        }
+    }
+
+    Node(CDeclaration)
+    {
+        Tag = "c_declaration_t"
+        Kind = Struct
+        Fields =
+        {
+            Field("form") { Type = "char*", Arity = One }
+            Field("children") { Type = "CNode*", Arity = Many }
+        }
+    }
+
+    Node(CType)
+    {
+        Tag = "c_type_t"
+        Kind = Struct
+        Fields =
+        {
+            Field("form") { Type = "char*", Arity = One }
+            Field("children") { Type = "CNode*", Arity = Many }
+        }
+    }
+
+    Node(CDeclarator)
+    {
+        Tag = "c_declarator_t"
+        Kind = Struct
+        Fields =
+        {
+            Field("form") { Type = "char*", Arity = One }
+            Field("children") { Type = "CNode*", Arity = Many }
+        }
+    }
+
+    Node(CExpression)
+    {
+        Tag = "c_expression_t"
+        Kind = Struct
+        Fields =
+        {
+            Field("form") { Type = "char*", Arity = One }
+            Field("children") { Type = "CNode*", Arity = Many }
+        }
+    }
+
+    Node(CStatement)
+    {
+        Tag = "c_statement_t"
+        Kind = Struct
+        Fields =
+        {
+            Field("form") { Type = "char*", Arity = One }
+            Field("children") { Type = "CNode*", Arity = Many }
+        }
+    }
+
+    Node(CInitializer)
+    {
+        Tag = "c_initializer_t"
+        Kind = Struct
+        Fields =
+        {
+            Field("form") { Type = "char*", Arity = One }
+            Field("children") { Type = "CNode*", Arity = Many }
+        }
+    }
+
+    Node(CSequence)
+    {
+        Tag = "c_sequence_t"
+        Kind = Struct
+        Fields =
+        {
+            Field("items") { Type = "CNode*", Arity = Many }
+        }
+    }
+}
+
+Lexical
+{
+    /* Longest preprocessing token wins; keywords win equal-length ties.
+     * Identifier UCNs and non-ASCII characters require Annex D validation.
+     * TYPEDEF_NAME is supplied by a scope-aware classifier, not a regex.
+     */
+    Skip(Whitespace) { Pattern = "[ \\t\\v\\f\\r\\n]+" }
+    Skip(Comment) { Pattern = "(/\\*([^*]|\\*+[^*/])*\\*+/|//[^\\r\\n]*)" }
+
+    Token(IDENTIFIER)
+    {
+        Pattern = "(?:[A-Za-z_]|[^\\x00-\\x7f]|\\\\u[0-9A-Fa-f]{4}|\\\\U[0-9A-Fa-f]{8})(?:[A-Za-z_0-9]|[^\\x00-\\x7f]|\\\\u[0-9A-Fa-f]{4}|\\\\U[0-9A-Fa-f]{8})*"
+    }
+    Token(TYPEDEF_NAME)
+    {
+        /* Proposed contextual token; see the scope contract in README.md. */
+        Classifier = "VisibleTypedefName"
+    }
+    Token(I_CONSTANT)
+    {
+        Pattern = "(?:0[xX][0-9A-Fa-f]+|0[0-7]*|[1-9][0-9]*)(?:[uU](?:ll|LL|[lL])?|(?:ll|LL|[lL])[uU]?)?"
+    }
+    Token(F_CONSTANT)
+    {
+        Pattern = "(?:(?:(?:[0-9]+\\.[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+)|0[xX](?:[0-9A-Fa-f]+(?:\\.[0-9A-Fa-f]*)?|\\.[0-9A-Fa-f]+)[pP][+-]?[0-9]+)[fFlL]?"
+    }
+    Token(CHAR_CONSTANT)
+    {
+        Pattern = "[LuU]?'(?:[^'\\\\\\r\\n]|\\\\(?:['\"?\\\\abfnrtv]|[0-7]{1,3}|x[0-9A-Fa-f]+|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}))+'"
+    }
+    Token(STRING_LITERAL)
+    {
+        Pattern = "(?:u8|[LuU])?\"(?:[^\"\\\\\\r\\n]|\\\\(?:['\"?\\\\abfnrtv]|[0-7]{1,3}|x[0-9A-Fa-f]+|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}))*\""
+    }
+
+    /* Keywords. Literal patterns are raw spellings, not escaped regexes. */
+    Token(KW_AUTO) { Pattern = "auto" Literal = Yes }
+    Token(KW_BREAK) { Pattern = "break" Literal = Yes }
+    Token(KW_CASE) { Pattern = "case" Literal = Yes }
+    Token(KW_CHAR) { Pattern = "char" Literal = Yes }
+    Token(KW_CONST) { Pattern = "const" Literal = Yes }
+    Token(KW_CONTINUE) { Pattern = "continue" Literal = Yes }
+    Token(KW_DEFAULT) { Pattern = "default" Literal = Yes }
+    Token(KW_DO) { Pattern = "do" Literal = Yes }
+    Token(KW_DOUBLE) { Pattern = "double" Literal = Yes }
+    Token(KW_ELSE) { Pattern = "else" Literal = Yes }
+    Token(KW_ENUM) { Pattern = "enum" Literal = Yes }
+    Token(KW_EXTERN) { Pattern = "extern" Literal = Yes }
+    Token(KW_FLOAT) { Pattern = "float" Literal = Yes }
+    Token(KW_FOR) { Pattern = "for" Literal = Yes }
+    Token(KW_GOTO) { Pattern = "goto" Literal = Yes }
+    Token(KW_IF) { Pattern = "if" Literal = Yes }
+    Token(KW_INLINE) { Pattern = "inline" Literal = Yes }
+    Token(KW_INT) { Pattern = "int" Literal = Yes }
+    Token(KW_LONG) { Pattern = "long" Literal = Yes }
+    Token(KW_REGISTER) { Pattern = "register" Literal = Yes }
+    Token(KW_RESTRICT) { Pattern = "restrict" Literal = Yes }
+    Token(KW_RETURN) { Pattern = "return" Literal = Yes }
+    Token(KW_SHORT) { Pattern = "short" Literal = Yes }
+    Token(KW_SIGNED) { Pattern = "signed" Literal = Yes }
+    Token(KW_SIZEOF) { Pattern = "sizeof" Literal = Yes }
+    Token(KW_STATIC) { Pattern = "static" Literal = Yes }
+    Token(KW_STRUCT) { Pattern = "struct" Literal = Yes }
+    Token(KW_SWITCH) { Pattern = "switch" Literal = Yes }
+    Token(KW_TYPEDEF) { Pattern = "typedef" Literal = Yes }
+    Token(KW_UNION) { Pattern = "union" Literal = Yes }
+    Token(KW_UNSIGNED) { Pattern = "unsigned" Literal = Yes }
+    Token(KW_VOID) { Pattern = "void" Literal = Yes }
+    Token(KW_VOLATILE) { Pattern = "volatile" Literal = Yes }
+    Token(KW_WHILE) { Pattern = "while" Literal = Yes }
+    Token(KW__ALIGNAS) { Pattern = "_Alignas" Literal = Yes }
+    Token(KW__ALIGNOF) { Pattern = "_Alignof" Literal = Yes }
+    Token(KW__ATOMIC) { Pattern = "_Atomic" Literal = Yes }
+    Token(KW__BOOL) { Pattern = "_Bool" Literal = Yes }
+    Token(KW__COMPLEX) { Pattern = "_Complex" Literal = Yes }
+    Token(KW__GENERIC) { Pattern = "_Generic" Literal = Yes }
+    Token(KW__IMAGINARY) { Pattern = "_Imaginary" Literal = Yes }
+    Token(KW__NORETURN) { Pattern = "_Noreturn" Literal = Yes }
+    Token(KW__STATIC_ASSERT) { Pattern = "_Static_assert" Literal = Yes }
+    Token(KW__THREAD_LOCAL) { Pattern = "_Thread_local" Literal = Yes }
+
+    /* Digraphs are normalized to these token kinds by the input adapter. */
+    Token(LBRACE) { Pattern = "{" Literal = Yes }
+    Token(RBRACE) { Pattern = "}" Literal = Yes }
+    Token(LPAREN) { Pattern = "(" Literal = Yes }
+    Token(RPAREN) { Pattern = ")" Literal = Yes }
+    Token(LBRACKET) { Pattern = "[" Literal = Yes }
+    Token(RBRACKET) { Pattern = "]" Literal = Yes }
+    Token(SEMICOLON) { Pattern = ";" Literal = Yes }
+    Token(COMMA) { Pattern = "," Literal = Yes }
+    Token(COLON) { Pattern = ":" Literal = Yes }
+    Token(DOT) { Pattern = "." Literal = Yes }
+    Token(ELLIPSIS) { Pattern = "..." Literal = Yes }
+    Token(ARROW) { Pattern = "->" Literal = Yes }
+    Token(INC) { Pattern = "++" Literal = Yes }
+    Token(DEC) { Pattern = "--" Literal = Yes }
+    Token(SHL) { Pattern = "<<" Literal = Yes }
+    Token(SHR) { Pattern = ">>" Literal = Yes }
+    Token(LE) { Pattern = "<=" Literal = Yes }
+    Token(GE) { Pattern = ">=" Literal = Yes }
+    Token(EQ) { Pattern = "==" Literal = Yes }
+    Token(NE) { Pattern = "!=" Literal = Yes }
+    Token(ANDAND) { Pattern = "&&" Literal = Yes }
+    Token(OROR) { Pattern = "||" Literal = Yes }
+    Token(OR) { Pattern = "|" Literal = Yes }
+    Token(PLUS) { Pattern = "+" Literal = Yes }
+    Token(MINUS) { Pattern = "-" Literal = Yes }
+    Token(STAR) { Pattern = "*" Literal = Yes }
+    Token(SLASH) { Pattern = "/" Literal = Yes }
+    Token(PERCENT) { Pattern = "%" Literal = Yes }
+    Token(ASSIGNMENT) { Pattern = "=" Literal = Yes }
+    Token(BANG) { Pattern = "!" Literal = Yes }
+    Token(TILDE) { Pattern = "~" Literal = Yes }
+    Token(AMP) { Pattern = "&" Literal = Yes }
+    Token(XOR) { Pattern = "^" Literal = Yes }
+    Token(LT) { Pattern = "<" Literal = Yes }
+    Token(GT) { Pattern = ">" Literal = Yes }
+    Token(QUESTION) { Pattern = "?" Literal = Yes }
+    Token(PLUS_ASSIGN) { Pattern = "+=" Literal = Yes }
+    Token(MINUS_ASSIGN) { Pattern = "-=" Literal = Yes }
+    Token(MUL_ASSIGN) { Pattern = "*=" Literal = Yes }
+    Token(DIV_ASSIGN) { Pattern = "/=" Literal = Yes }
+    Token(MOD_ASSIGN) { Pattern = "%=" Literal = Yes }
+    Token(AND_ASSIGN) { Pattern = "&=" Literal = Yes }
+    Token(XOR_ASSIGN) { Pattern = "^=" Literal = Yes }
+    Token(OR_ASSIGN) { Pattern = "|=" Literal = Yes }
+    Token(SHL_ASSIGN) { Pattern = "<<=" Literal = Yes }
+    Token(SHR_ASSIGN) { Pattern = ">>=" Literal = Yes }
+}
+
+Syntactic
+{
+    StartRule = "TranslationUnit"
+
+    /* Action helpers are specified in README.md: Token, Tree, Sequence,
+     * Append, Unit. They allocate only after derivation selection.
+     * Every rule returns CNode; sequence nodes flatten recursive lists.
+     */
+    Rule(TranslationUnit) -> CNode
+    {
+        Alt { Seq = "ExternalDeclarationList" Action = "Unit($1)" }
+    }
+    Rule(ExternalDeclarationList) -> CNode
+    {
+        Alt { Seq = "ExternalDeclaration" Action = "Sequence($1)" }
+        Alt { Seq = "ExternalDeclarationList ExternalDeclaration" Action = "Append($1, $2)" }
+    }
+    Rule(ExternalDeclaration) -> CNode
+    {
+        Alt { Seq = "FunctionDefinition" Action = "return $1;" }
+        Alt { Seq = "Declaration" Action = "return $1;" }
+    }
+    Rule(FunctionDefinition) -> CNode
+    {
+        Alt { Seq = "DeclarationSpecifiers Declarator CompoundStatement" Action = "Tree(CDeclaration, function, $1, $2, $3)" }
+        Alt { Seq = "DeclarationSpecifiers Declarator DeclarationList CompoundStatement" Action = "Tree(CDeclaration, old-style-function, $1, $2, $3, $4)" }
+    }
+    Rule(DeclarationList) -> CNode
+    {
+        Alt { Seq = "Declaration" Action = "Sequence($1)" }
+        Alt { Seq = "DeclarationList Declaration" Action = "Append($1, $2)" }
+    }
+    Rule(Declaration) -> CNode
+    {
+        Alt { Seq = "DeclarationSpecifiers InitDeclaratorList SEMICOLON" Action = "Tree(CDeclaration, declaration, $1, $2)" }
+        Alt { Seq = "DeclarationSpecifiers SEMICOLON" Action = "Tree(CDeclaration, declaration, $1)" }
+        Alt { Seq = "StaticAssertDeclaration" Action = "return $1;" }
+    }
+    Rule(StaticAssertDeclaration) -> CNode
+    {
+        Alt { Seq = "KW__STATIC_ASSERT LPAREN ConstantExpression COMMA StringLiteralSequence RPAREN SEMICOLON" Action = "Tree(CDeclaration, static-assert, $3, $5)" }
+    }
+    Rule(DeclarationSpecifiers) -> CNode
+    {
+        Alt { Seq = "DeclarationSpecifier" Action = "Sequence($1)" }
+        Alt { Seq = "DeclarationSpecifiers DeclarationSpecifier" Action = "Append($1, $2)" }
+    }
+    Rule(DeclarationSpecifier) -> CNode
+    {
+        Alt { Seq = "StorageClassSpecifier" Action = "return $1;" }
+        Alt { Seq = "TypeSpecifier" Action = "return $1;" }
+        Alt { Seq = "TypeQualifier" Action = "return $1;" }
+        Alt { Seq = "FunctionSpecifier" Action = "return $1;" }
+        Alt { Seq = "AlignmentSpecifier" Action = "return $1;" }
+    }
+    Rule(StorageClassSpecifier) -> CNode
+    {
+        Alt { Seq = "KW_TYPEDEF" Action = "Token($1)" }
+        Alt { Seq = "KW_EXTERN" Action = "Token($1)" }
+        Alt { Seq = "KW_STATIC" Action = "Token($1)" }
+        Alt { Seq = "KW__THREAD_LOCAL" Action = "Token($1)" }
+        Alt { Seq = "KW_AUTO" Action = "Token($1)" }
+        Alt { Seq = "KW_REGISTER" Action = "Token($1)" }
+    }
+    Rule(TypeSpecifier) -> CNode
+    {
+        Alt { Seq = "KW_VOID" Action = "Token($1)" }
+        Alt { Seq = "KW_CHAR" Action = "Token($1)" }
+        Alt { Seq = "KW_SHORT" Action = "Token($1)" }
+        Alt { Seq = "KW_INT" Action = "Token($1)" }
+        Alt { Seq = "KW_LONG" Action = "Token($1)" }
+        Alt { Seq = "KW_FLOAT" Action = "Token($1)" }
+        Alt { Seq = "KW_DOUBLE" Action = "Token($1)" }
+        Alt { Seq = "KW_SIGNED" Action = "Token($1)" }
+        Alt { Seq = "KW_UNSIGNED" Action = "Token($1)" }
+        Alt { Seq = "KW__BOOL" Action = "Token($1)" }
+        Alt { Seq = "KW__COMPLEX" Action = "Token($1)" }
+        Alt { Seq = "KW__IMAGINARY" Action = "Token($1)" }
+        Alt { Seq = "AtomicTypeSpecifier" Action = "return $1;" }
+        Alt { Seq = "StructOrUnionSpecifier" Action = "return $1;" }
+        Alt { Seq = "EnumSpecifier" Action = "return $1;" }
+        Alt { Seq = "TYPEDEF_NAME" Action = "Tree(CType, typedef-name, Token($1))" }
+    }
+    Rule(TypeQualifier) -> CNode
+    {
+        Alt { Seq = "KW_CONST" Action = "Token($1)" }
+        Alt { Seq = "KW_RESTRICT" Action = "Token($1)" }
+        Alt { Seq = "KW_VOLATILE" Action = "Token($1)" }
+        Alt { Seq = "KW__ATOMIC" Action = "Token($1)" }
+    }
+    Rule(FunctionSpecifier) -> CNode
+    {
+        Alt { Seq = "KW_INLINE" Action = "Token($1)" }
+        Alt { Seq = "KW__NORETURN" Action = "Token($1)" }
+    }
+    Rule(AlignmentSpecifier) -> CNode
+    {
+        Alt { Seq = "KW__ALIGNAS LPAREN TypeName RPAREN" Action = "Tree(CType, alignas-type, $3)" }
+        Alt { Seq = "KW__ALIGNAS LPAREN ConstantExpression RPAREN" Action = "Tree(CType, alignas-expression, $3)" }
+    }
+    Rule(AtomicTypeSpecifier) -> CNode
+    {
+        Alt { Seq = "KW__ATOMIC LPAREN TypeName RPAREN" Action = "Tree(CType, atomic, $3)" }
+    }
+    Rule(StructOrUnionSpecifier) -> CNode
+    {
+        Alt { Seq = "StructOrUnion Name LBRACE StructDeclarationList RBRACE" Action = "Tree(CType, tagged-record, $1, $2, $4)" }
+        Alt { Seq = "StructOrUnion LBRACE StructDeclarationList RBRACE" Action = "Tree(CType, anonymous-record, $1, $3)" }
+        Alt { Seq = "StructOrUnion Name" Action = "Tree(CType, record-reference, $1, $2)" }
+    }
+    Rule(StructOrUnion) -> CNode
+    {
+        Alt { Seq = "KW_STRUCT" Action = "Token($1)" }
+        Alt { Seq = "KW_UNION" Action = "Token($1)" }
+    }
+    Rule(StructDeclarationList) -> CNode
+    {
+        Alt { Seq = "StructDeclaration" Action = "Sequence($1)" }
+        Alt { Seq = "StructDeclarationList StructDeclaration" Action = "Append($1, $2)" }
+    }
+    Rule(StructDeclaration) -> CNode
+    {
+        Alt { Seq = "SpecifierQualifierList StructDeclaratorList SEMICOLON" Action = "Tree(CDeclaration, member, $1, $2)" }
+        Alt { Seq = "SpecifierQualifierList SEMICOLON" Action = "Tree(CDeclaration, anonymous-member, $1)" }
+        Alt { Seq = "StaticAssertDeclaration" Action = "return $1;" }
+    }
+    Rule(SpecifierQualifierList) -> CNode
+    {
+        Alt { Seq = "TypeSpecifier" Action = "Sequence($1)" }
+        Alt { Seq = "TypeQualifier" Action = "Sequence($1)" }
+        Alt { Seq = "SpecifierQualifierList TypeSpecifier" Action = "Append($1, $2)" }
+        Alt { Seq = "SpecifierQualifierList TypeQualifier" Action = "Append($1, $2)" }
+    }
+    Rule(StructDeclaratorList) -> CNode
+    {
+        Alt { Seq = "StructDeclarator" Action = "Sequence($1)" }
+        Alt { Seq = "StructDeclaratorList COMMA StructDeclarator" Action = "Append($1, $3)" }
+    }
+    Rule(StructDeclarator) -> CNode
+    {
+        Alt { Seq = "Declarator" Action = "return $1;" }
+        Alt { Seq = "Declarator COLON ConstantExpression" Action = "Tree(CDeclarator, bit-field, $1, $3)" }
+        Alt { Seq = "COLON ConstantExpression" Action = "Tree(CDeclarator, unnamed-bit-field, $2)" }
+    }
+    Rule(EnumSpecifier) -> CNode
+    {
+        Alt { Seq = "KW_ENUM Name LBRACE EnumeratorList RBRACE" Action = "Tree(CType, tagged-enum, $2, $4)" }
+        Alt { Seq = "KW_ENUM Name LBRACE EnumeratorList COMMA RBRACE" Action = "Tree(CType, tagged-enum, $2, $4)" }
+        Alt { Seq = "KW_ENUM LBRACE EnumeratorList RBRACE" Action = "Tree(CType, anonymous-enum, $3)" }
+        Alt { Seq = "KW_ENUM LBRACE EnumeratorList COMMA RBRACE" Action = "Tree(CType, anonymous-enum, $3)" }
+        Alt { Seq = "KW_ENUM Name" Action = "Tree(CType, enum-reference, $2)" }
+    }
+    Rule(EnumeratorList) -> CNode
+    {
+        Alt { Seq = "Enumerator" Action = "Sequence($1)" }
+        Alt { Seq = "EnumeratorList COMMA Enumerator" Action = "Append($1, $3)" }
+    }
+    Rule(Enumerator) -> CNode
+    {
+        Alt { Seq = "Name" Action = "Tree(CDeclaration, enumerator, $1)" }
+        Alt { Seq = "Name ASSIGNMENT ConstantExpression" Action = "Tree(CDeclaration, enumerator, $1, $3)" }
+    }
+    Rule(InitDeclaratorList) -> CNode
+    {
+        Alt { Seq = "InitDeclarator" Action = "Sequence($1)" }
+        Alt { Seq = "InitDeclaratorList COMMA InitDeclarator" Action = "Append($1, $3)" }
+    }
+    Rule(InitDeclarator) -> CNode
+    {
+        Alt { Seq = "Declarator" Action = "return $1;" }
+        Alt { Seq = "Declarator ASSIGNMENT Initializer" Action = "Tree(CDeclarator, initialized, $1, $3)" }
+    }
+
+    /* Declarator parentheses determine binding, so retain grouping nodes. */
+    Rule(Declarator) -> CNode
+    {
+        Alt { Seq = "Pointer DirectDeclarator" Action = "Tree(CDeclarator, pointer-declarator, $1, $2)" }
+        Alt { Seq = "DirectDeclarator" Action = "return $1;" }
+    }
+    Rule(DirectDeclarator) -> CNode
+    {
+        Alt { Seq = "Name" Action = "Tree(CDeclarator, name, $1)" }
+        Alt { Seq = "LPAREN Declarator RPAREN" Action = "Tree(CDeclarator, grouped, $2)" }
+        Alt { Seq = "DirectDeclarator ArraySuffix" Action = "Tree(CDeclarator, array, $1, $2)" }
+        Alt { Seq = "DirectDeclarator LPAREN RPAREN" Action = "Tree(CDeclarator, unspecified-parameters, $1)" }
+        Alt { Seq = "DirectDeclarator LPAREN ParameterTypeList RPAREN" Action = "Tree(CDeclarator, prototype, $1, $3)" }
+        Alt { Seq = "DirectDeclarator LPAREN IdentifierList RPAREN" Action = "Tree(CDeclarator, identifier-parameters, $1, $3)" }
+    }
+    Rule(ArraySuffix) -> CNode
+    {
+        Alt { Seq = "LBRACKET RBRACKET" Action = "Tree(CDeclarator, unsized)" }
+        Alt { Seq = "LBRACKET AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, bound, $2)" }
+        Alt { Seq = "LBRACKET TypeQualifierList RBRACKET" Action = "Tree(CDeclarator, qualified-unsized, $2)" }
+        Alt { Seq = "LBRACKET TypeQualifierList AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, qualified-bound, $2, $3)" }
+        Alt { Seq = "LBRACKET KW_STATIC AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, static-bound, $3)" }
+        Alt { Seq = "LBRACKET KW_STATIC TypeQualifierList AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, static-qualified-bound, $3, $4)" }
+        Alt { Seq = "LBRACKET TypeQualifierList KW_STATIC AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, static-qualified-bound, $2, $4)" }
+        Alt { Seq = "LBRACKET STAR RBRACKET" Action = "Tree(CDeclarator, variable-star)" }
+        Alt { Seq = "LBRACKET TypeQualifierList STAR RBRACKET" Action = "Tree(CDeclarator, qualified-variable-star, $2)" }
+    }
+    Rule(Pointer) -> CNode
+    {
+        Alt { Seq = "STAR" Action = "Tree(CDeclarator, pointer)" }
+        Alt { Seq = "STAR TypeQualifierList" Action = "Tree(CDeclarator, qualified-pointer, $2)" }
+        Alt { Seq = "STAR Pointer" Action = "Tree(CDeclarator, pointer, $2)" }
+        Alt { Seq = "STAR TypeQualifierList Pointer" Action = "Tree(CDeclarator, qualified-pointer, $2, $3)" }
+    }
+    Rule(TypeQualifierList) -> CNode
+    {
+        Alt { Seq = "TypeQualifier" Action = "Sequence($1)" }
+        Alt { Seq = "TypeQualifierList TypeQualifier" Action = "Append($1, $2)" }
+    }
+    Rule(ParameterTypeList) -> CNode
+    {
+        Alt { Seq = "ParameterList" Action = "return $1;" }
+        Alt { Seq = "ParameterList COMMA ELLIPSIS" Action = "Append($1, Tree(CDeclaration, variadic))" }
+    }
+    Rule(ParameterList) -> CNode
+    {
+        Alt { Seq = "ParameterDeclaration" Action = "Sequence($1)" }
+        Alt { Seq = "ParameterList COMMA ParameterDeclaration" Action = "Append($1, $3)" }
+    }
+    Rule(ParameterDeclaration) -> CNode
+    {
+        Alt { Seq = "DeclarationSpecifiers Declarator" Action = "Tree(CDeclaration, parameter, $1, $2)" }
+        Alt { Seq = "DeclarationSpecifiers AbstractDeclarator" Action = "Tree(CDeclaration, abstract-parameter, $1, $2)" }
+        Alt { Seq = "DeclarationSpecifiers" Action = "Tree(CDeclaration, abstract-parameter, $1)" }
+    }
+    Rule(IdentifierList) -> CNode
+    {
+        Alt { Seq = "Name" Action = "Sequence($1)" }
+        Alt { Seq = "IdentifierList COMMA Name" Action = "Append($1, $3)" }
+    }
+    Rule(TypeName) -> CNode
+    {
+        Alt { Seq = "SpecifierQualifierList" Action = "Tree(CType, type-name, $1)" }
+        Alt { Seq = "SpecifierQualifierList AbstractDeclarator" Action = "Tree(CType, type-name, $1, $2)" }
+    }
+    Rule(AbstractDeclarator) -> CNode
+    {
+        Alt { Seq = "Pointer" Action = "return $1;" }
+        Alt { Seq = "DirectAbstractDeclarator" Action = "return $1;" }
+        Alt { Seq = "Pointer DirectAbstractDeclarator" Action = "Tree(CDeclarator, abstract-pointer, $1, $2)" }
+    }
+    Rule(DirectAbstractDeclarator) -> CNode
+    {
+        Alt { Seq = "LPAREN AbstractDeclarator RPAREN" Action = "Tree(CDeclarator, grouped, $2)" }
+        Alt { Seq = "AbstractArraySuffix" Action = "return $1;" }
+        Alt { Seq = "DirectAbstractDeclarator AbstractArraySuffix" Action = "Tree(CDeclarator, array, $1, $2)" }
+        Alt { Seq = "LPAREN RPAREN" Action = "Tree(CDeclarator, unspecified-parameters)" }
+        Alt { Seq = "LPAREN ParameterTypeList RPAREN" Action = "Tree(CDeclarator, prototype, $2)" }
+        Alt { Seq = "DirectAbstractDeclarator LPAREN RPAREN" Action = "Tree(CDeclarator, unspecified-parameters, $1)" }
+        Alt { Seq = "DirectAbstractDeclarator LPAREN ParameterTypeList RPAREN" Action = "Tree(CDeclarator, prototype, $1, $3)" }
+    }
+    Rule(AbstractArraySuffix) -> CNode
+    {
+        Alt { Seq = "LBRACKET RBRACKET" Action = "Tree(CDeclarator, unsized)" }
+        Alt { Seq = "LBRACKET AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, bound, $2)" }
+        Alt { Seq = "LBRACKET TypeQualifierList RBRACKET" Action = "Tree(CDeclarator, qualified-unsized, $2)" }
+        Alt { Seq = "LBRACKET TypeQualifierList AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, qualified-bound, $2, $3)" }
+        Alt { Seq = "LBRACKET KW_STATIC AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, static-bound, $3)" }
+        Alt { Seq = "LBRACKET KW_STATIC TypeQualifierList AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, static-qualified-bound, $3, $4)" }
+        Alt { Seq = "LBRACKET TypeQualifierList KW_STATIC AssignmentExpression RBRACKET" Action = "Tree(CDeclarator, static-qualified-bound, $2, $4)" }
+        Alt { Seq = "LBRACKET STAR RBRACKET" Action = "Tree(CDeclarator, variable-star)" }
+    }
+
+    /* Initializers and designators. Braced lists are nonempty in C11. */
+    Rule(Initializer) -> CNode
+    {
+        Alt { Seq = "AssignmentExpression" Action = "Tree(CInitializer, scalar, $1)" }
+        Alt { Seq = "LBRACE InitializerList RBRACE" Action = "Tree(CInitializer, braced, $2)" }
+        Alt { Seq = "LBRACE InitializerList COMMA RBRACE" Action = "Tree(CInitializer, braced, $2)" }
+    }
+    Rule(InitializerList) -> CNode
+    {
+        Alt { Seq = "InitializerElement" Action = "Sequence($1)" }
+        Alt { Seq = "InitializerList COMMA InitializerElement" Action = "Append($1, $3)" }
+    }
+    Rule(InitializerElement) -> CNode
+    {
+        Alt { Seq = "Initializer" Action = "return $1;" }
+        Alt { Seq = "Designation Initializer" Action = "Tree(CInitializer, designated, $1, $2)" }
+    }
+    Rule(Designation) -> CNode
+    {
+        Alt { Seq = "DesignatorList ASSIGNMENT" Action = "return $1;" }
+    }
+    Rule(DesignatorList) -> CNode
+    {
+        Alt { Seq = "Designator" Action = "Sequence($1)" }
+        Alt { Seq = "DesignatorList Designator" Action = "Append($1, $2)" }
+    }
+    Rule(Designator) -> CNode
+    {
+        Alt { Seq = "LBRACKET ConstantExpression RBRACKET" Action = "Tree(CInitializer, index-designator, $2)" }
+        Alt { Seq = "DOT Name" Action = "Tree(CInitializer, member-designator, $2)" }
+    }
+
+    /* Statements. Nearest unmatched if owns else (semantic forest policy).
+     * ATN lookahead alone cannot decide a genuine dangling-else ambiguity.
+     */
+    Rule(CompoundStatement) -> CNode
+    {
+        Alt { Seq = "LBRACE RBRACE" Action = "Tree(CStatement, block)" }
+        Alt { Seq = "LBRACE BlockItemList RBRACE" Action = "Tree(CStatement, block, $2)" }
+    }
+    Rule(BlockItemList) -> CNode
+    {
+        Alt { Seq = "BlockItem" Action = "Sequence($1)" }
+        Alt { Seq = "BlockItemList BlockItem" Action = "Append($1, $2)" }
+    }
+    Rule(BlockItem) -> CNode
+    {
+        Alt { Seq = "Declaration" Action = "return $1;" }
+        Alt { Seq = "Statement" Action = "return $1;" }
+    }
+    Rule(Statement) -> CNode
+    {
+        Alt { Seq = "LabeledStatement" Action = "return $1;" }
+        Alt { Seq = "CompoundStatement" Action = "return $1;" }
+        Alt { Seq = "ExpressionStatement" Action = "return $1;" }
+        Alt { Seq = "SelectionStatement" Action = "return $1;" }
+        Alt { Seq = "IterationStatement" Action = "return $1;" }
+        Alt { Seq = "JumpStatement" Action = "return $1;" }
+    }
+    Rule(LabeledStatement) -> CNode
+    {
+        Alt { Seq = "Name COLON Statement" Action = "Tree(CStatement, label, $1, $3)" }
+        Alt { Seq = "KW_CASE ConstantExpression COLON Statement" Action = "Tree(CStatement, case, $2, $4)" }
+        Alt { Seq = "KW_DEFAULT COLON Statement" Action = "Tree(CStatement, default, $3)" }
+    }
+    Rule(ExpressionStatement) -> CNode
+    {
+        Alt { Seq = "SEMICOLON" Action = "Tree(CStatement, empty)" }
+        Alt { Seq = "Expression SEMICOLON" Action = "Tree(CStatement, expression, $1)" }
+    }
+    Rule(SelectionStatement) -> CNode
+    {
+        Alt { Seq = "KW_IF LPAREN Expression RPAREN Statement" Action = "Tree(CStatement, if, $3, $5)" }
+        Alt { Seq = "KW_IF LPAREN Expression RPAREN Statement KW_ELSE Statement" Action = "Tree(CStatement, if-else, $3, $5, $7)" }
+        Alt { Seq = "KW_SWITCH LPAREN Expression RPAREN Statement" Action = "Tree(CStatement, switch, $3, $5)" }
+    }
+    Rule(IterationStatement) -> CNode
+    {
+        Alt { Seq = "KW_WHILE LPAREN Expression RPAREN Statement" Action = "Tree(CStatement, while, $3, $5)" }
+        Alt { Seq = "KW_DO Statement KW_WHILE LPAREN Expression RPAREN SEMICOLON" Action = "Tree(CStatement, do-while, $2, $5)" }
+        Alt { Seq = "KW_FOR LPAREN ExpressionStatement ExpressionStatement RPAREN Statement" Action = "Tree(CStatement, for-expression, $3, $4, $6)" }
+        Alt { Seq = "KW_FOR LPAREN ExpressionStatement ExpressionStatement Expression RPAREN Statement" Action = "Tree(CStatement, for-expression-step, $3, $4, $5, $7)" }
+        Alt { Seq = "KW_FOR LPAREN Declaration ExpressionStatement RPAREN Statement" Action = "Tree(CStatement, for-declaration, $3, $4, $6)" }
+        Alt { Seq = "KW_FOR LPAREN Declaration ExpressionStatement Expression RPAREN Statement" Action = "Tree(CStatement, for-declaration-step, $3, $4, $5, $7)" }
+    }
+    Rule(JumpStatement) -> CNode
+    {
+        Alt { Seq = "KW_GOTO Name SEMICOLON" Action = "Tree(CStatement, goto, $2)" }
+        Alt { Seq = "KW_CONTINUE SEMICOLON" Action = "Tree(CStatement, continue)" }
+        Alt { Seq = "KW_BREAK SEMICOLON" Action = "Tree(CStatement, break)" }
+        Alt { Seq = "KW_RETURN SEMICOLON" Action = "Tree(CStatement, return)" }
+        Alt { Seq = "KW_RETURN Expression SEMICOLON" Action = "Tree(CStatement, return, $2)" }
+    }
+
+    /* Expression precedence is structural; assignment and ?: associate right. */
+    Rule(Expression) -> CNode
+    {
+        Alt { Seq = "AssignmentExpression" Action = "return $1;" }
+        Alt { Seq = "Expression COMMA AssignmentExpression" Action = "Tree(CExpression, comma, $1, $3)" }
+    }
+    Rule(AssignmentExpression) -> CNode
+    {
+        Alt { Seq = "ConditionalExpression" Action = "return $1;" }
+        Alt { Seq = "UnaryExpression AssignmentOperator AssignmentExpression" Action = "Tree(CExpression, assignment, $1, $2, $3)" }
+    }
+    Rule(AssignmentOperator) -> CNode
+    {
+        Alt { Seq = "ASSIGNMENT" Action = "Token($1)" }
+        Alt { Seq = "PLUS_ASSIGN" Action = "Token($1)" }
+        Alt { Seq = "MINUS_ASSIGN" Action = "Token($1)" }
+        Alt { Seq = "MUL_ASSIGN" Action = "Token($1)" }
+        Alt { Seq = "DIV_ASSIGN" Action = "Token($1)" }
+        Alt { Seq = "MOD_ASSIGN" Action = "Token($1)" }
+        Alt { Seq = "SHL_ASSIGN" Action = "Token($1)" }
+        Alt { Seq = "SHR_ASSIGN" Action = "Token($1)" }
+        Alt { Seq = "AND_ASSIGN" Action = "Token($1)" }
+        Alt { Seq = "XOR_ASSIGN" Action = "Token($1)" }
+        Alt { Seq = "OR_ASSIGN" Action = "Token($1)" }
+    }
+    Rule(ConditionalExpression) -> CNode
+    {
+        Alt { Seq = "LogicalOrExpression" Action = "return $1;" }
+        Alt { Seq = "LogicalOrExpression QUESTION Expression COLON ConditionalExpression" Action = "Tree(CExpression, conditional, $1, $3, $5)" }
+    }
+    Rule(LogicalOrExpression) -> CNode
+    {
+        Alt { Seq = "LogicalAndExpression" Action = "return $1;" }
+        Alt { Seq = "LogicalOrExpression OROR LogicalAndExpression" Action = "Tree(CExpression, logical-or, $1, $3)" }
+    }
+    Rule(LogicalAndExpression) -> CNode
+    {
+        Alt { Seq = "InclusiveOrExpression" Action = "return $1;" }
+        Alt { Seq = "LogicalAndExpression ANDAND InclusiveOrExpression" Action = "Tree(CExpression, logical-and, $1, $3)" }
+    }
+    Rule(InclusiveOrExpression) -> CNode
+    {
+        Alt { Seq = "ExclusiveOrExpression" Action = "return $1;" }
+        Alt { Seq = "InclusiveOrExpression OR ExclusiveOrExpression" Action = "Tree(CExpression, bitwise-or, $1, $3)" }
+    }
+    Rule(ExclusiveOrExpression) -> CNode
+    {
+        Alt { Seq = "AndExpression" Action = "return $1;" }
+        Alt { Seq = "ExclusiveOrExpression XOR AndExpression" Action = "Tree(CExpression, bitwise-xor, $1, $3)" }
+    }
+    Rule(AndExpression) -> CNode
+    {
+        Alt { Seq = "EqualityExpression" Action = "return $1;" }
+        Alt { Seq = "AndExpression AMP EqualityExpression" Action = "Tree(CExpression, bitwise-and, $1, $3)" }
+    }
+    Rule(EqualityExpression) -> CNode
+    {
+        Alt { Seq = "RelationalExpression" Action = "return $1;" }
+        Alt { Seq = "EqualityExpression EQ RelationalExpression" Action = "Tree(CExpression, equal, $1, $3)" }
+        Alt { Seq = "EqualityExpression NE RelationalExpression" Action = "Tree(CExpression, not-equal, $1, $3)" }
+    }
+    Rule(RelationalExpression) -> CNode
+    {
+        Alt { Seq = "ShiftExpression" Action = "return $1;" }
+        Alt { Seq = "RelationalExpression LT ShiftExpression" Action = "Tree(CExpression, less, $1, $3)" }
+        Alt { Seq = "RelationalExpression GT ShiftExpression" Action = "Tree(CExpression, greater, $1, $3)" }
+        Alt { Seq = "RelationalExpression LE ShiftExpression" Action = "Tree(CExpression, less-equal, $1, $3)" }
+        Alt { Seq = "RelationalExpression GE ShiftExpression" Action = "Tree(CExpression, greater-equal, $1, $3)" }
+    }
+    Rule(ShiftExpression) -> CNode
+    {
+        Alt { Seq = "AdditiveExpression" Action = "return $1;" }
+        Alt { Seq = "ShiftExpression SHL AdditiveExpression" Action = "Tree(CExpression, shift-left, $1, $3)" }
+        Alt { Seq = "ShiftExpression SHR AdditiveExpression" Action = "Tree(CExpression, shift-right, $1, $3)" }
+    }
+    Rule(AdditiveExpression) -> CNode
+    {
+        Alt { Seq = "MultiplicativeExpression" Action = "return $1;" }
+        Alt { Seq = "AdditiveExpression PLUS MultiplicativeExpression" Action = "Tree(CExpression, add, $1, $3)" }
+        Alt { Seq = "AdditiveExpression MINUS MultiplicativeExpression" Action = "Tree(CExpression, subtract, $1, $3)" }
+    }
+    Rule(MultiplicativeExpression) -> CNode
+    {
+        Alt { Seq = "CastExpression" Action = "return $1;" }
+        Alt { Seq = "MultiplicativeExpression STAR CastExpression" Action = "Tree(CExpression, multiply, $1, $3)" }
+        Alt { Seq = "MultiplicativeExpression SLASH CastExpression" Action = "Tree(CExpression, divide, $1, $3)" }
+        Alt { Seq = "MultiplicativeExpression PERCENT CastExpression" Action = "Tree(CExpression, remainder, $1, $3)" }
+    }
+    Rule(CastExpression) -> CNode
+    {
+        Alt { Seq = "UnaryExpression" Action = "return $1;" }
+        Alt { Seq = "LPAREN TypeName RPAREN CastExpression" Action = "Tree(CExpression, cast, $2, $4)" }
+    }
+    Rule(UnaryExpression) -> CNode
+    {
+        Alt { Seq = "PostfixExpression" Action = "return $1;" }
+        Alt { Seq = "INC UnaryExpression" Action = "Tree(CExpression, prefix-increment, $2)" }
+        Alt { Seq = "DEC UnaryExpression" Action = "Tree(CExpression, prefix-decrement, $2)" }
+        Alt { Seq = "UnaryOperator CastExpression" Action = "Tree(CExpression, unary, $1, $2)" }
+        Alt { Seq = "KW_SIZEOF UnaryExpression" Action = "Tree(CExpression, sizeof-expression, $2)" }
+        Alt { Seq = "KW_SIZEOF LPAREN TypeName RPAREN" Action = "Tree(CExpression, sizeof-type, $3)" }
+        Alt { Seq = "KW__ALIGNOF LPAREN TypeName RPAREN" Action = "Tree(CExpression, alignof-type, $3)" }
+    }
+    Rule(UnaryOperator) -> CNode
+    {
+        Alt { Seq = "PLUS" Action = "Token($1)" }
+        Alt { Seq = "MINUS" Action = "Token($1)" }
+        Alt { Seq = "BANG" Action = "Token($1)" }
+        Alt { Seq = "TILDE" Action = "Token($1)" }
+        Alt { Seq = "AMP" Action = "Token($1)" }
+        Alt { Seq = "STAR" Action = "Token($1)" }
+    }
+    Rule(PostfixExpression) -> CNode
+    {
+        Alt { Seq = "PrimaryExpression" Action = "return $1;" }
+        Alt { Seq = "PostfixExpression LBRACKET Expression RBRACKET" Action = "Tree(CExpression, subscript, $1, $3)" }
+        Alt { Seq = "PostfixExpression LPAREN RPAREN" Action = "Tree(CExpression, call, $1)" }
+        Alt { Seq = "PostfixExpression LPAREN ArgumentExpressionList RPAREN" Action = "Tree(CExpression, call, $1, $3)" }
+        Alt { Seq = "PostfixExpression DOT Name" Action = "Tree(CExpression, member, $1, $3)" }
+        Alt { Seq = "PostfixExpression ARROW Name" Action = "Tree(CExpression, indirect-member, $1, $3)" }
+        Alt { Seq = "PostfixExpression INC" Action = "Tree(CExpression, postfix-increment, $1)" }
+        Alt { Seq = "PostfixExpression DEC" Action = "Tree(CExpression, postfix-decrement, $1)" }
+        Alt { Seq = "LPAREN TypeName RPAREN LBRACE InitializerList RBRACE" Action = "Tree(CExpression, compound-literal, $2, $5)" }
+        Alt { Seq = "LPAREN TypeName RPAREN LBRACE InitializerList COMMA RBRACE" Action = "Tree(CExpression, compound-literal, $2, $5)" }
+    }
+    Rule(ArgumentExpressionList) -> CNode
+    {
+        Alt { Seq = "AssignmentExpression" Action = "Sequence($1)" }
+        Alt { Seq = "ArgumentExpressionList COMMA AssignmentExpression" Action = "Append($1, $3)" }
+    }
+    Rule(PrimaryExpression) -> CNode
+    {
+        Alt { Seq = "IDENTIFIER" Action = "Tree(CExpression, identifier, Token($1))" }
+        Alt { Seq = "I_CONSTANT" Action = "Tree(CExpression, integer, Token($1))" }
+        Alt { Seq = "F_CONSTANT" Action = "Tree(CExpression, floating, Token($1))" }
+        Alt { Seq = "CHAR_CONSTANT" Action = "Tree(CExpression, character, Token($1))" }
+        Alt { Seq = "StringLiteralSequence" Action = "return $1;" }
+        Alt { Seq = "LPAREN Expression RPAREN" Action = "return $2;" }
+        Alt { Seq = "GenericSelection" Action = "return $1;" }
+    }
+    Rule(StringLiteralSequence) -> CNode
+    {
+        Alt { Seq = "StringFragments" Action = "Tree(CExpression, string, $1)" }
+    }
+    Rule(StringFragments) -> CNode
+    {
+        Alt { Seq = "STRING_LITERAL" Action = "Sequence(Token($1))" }
+        Alt { Seq = "StringFragments STRING_LITERAL" Action = "Append($1, Token($2))" }
+    }
+    Rule(GenericSelection) -> CNode
+    {
+        Alt { Seq = "KW__GENERIC LPAREN AssignmentExpression COMMA GenericAssocList RPAREN" Action = "Tree(CExpression, generic, $3, $5)" }
+    }
+    Rule(GenericAssocList) -> CNode
+    {
+        Alt { Seq = "GenericAssociation" Action = "Sequence($1)" }
+        Alt { Seq = "GenericAssocList COMMA GenericAssociation" Action = "Append($1, $3)" }
+    }
+    Rule(GenericAssociation) -> CNode
+    {
+        Alt { Seq = "TypeName COLON AssignmentExpression" Action = "Tree(CExpression, generic-association, $1, $3)" }
+        Alt { Seq = "KW_DEFAULT COLON AssignmentExpression" Action = "Tree(CExpression, generic-default, $3)" }
+    }
+    Rule(ConstantExpression) -> CNode
+    {
+        Alt { Seq = "ConditionalExpression" Action = "return $1;" }
+    }
+    /* Tags, members, labels and declarator names can spell a visible typedef.
+     * This does NOT admit typedef names as primary expressions. A contextual
+     * classifier must account for shadowing at the point of declaration.
+     */
+    Rule(Name) -> CNode
+    {
+        Alt { Seq = "IDENTIFIER" Action = "Token($1)" }
+        Alt { Seq = "TYPEDEF_NAME" Action = "Token($1)" }
+    }
+}

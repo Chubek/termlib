@@ -1,0 +1,6 @@
+/* sprintf.gpp -- version-string helpers (no token pasting). */
+#mode standard C
+#ifndef MOOSEDOG_GPP_SPRINTF_INCLUDED
+#define MOOSEDOG_GPP_SPRINTF_INCLUDED
+#define MD_VERSION_STRING(name, ver) name " " ver
+#endif

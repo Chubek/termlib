@@ -1,0 +1,45 @@
+/*
+ * Support.gpp -- grammar preprocessor prelude for ANSI-C.grm.
+ * License: MIT. This preprocesses the specification, not C source code.
+ * Load with: gpp -C --include Support.gpp ANSI-C.grm
+ * -C also sets the main input's mode (include-local modes are restored).
+ *
+ * Boolean CLI flags define a symbol only when enabled. In particular,
+ * -DANSI_C_NO_ATN disables ATN emission AND runtime adaptive lookahead.
+ * Quoted Action strings belong to the future action compiler; this file
+ * intentionally does not attempt to expand macros inside those strings.
+ */
+#mode standard C
+
+#ifndef ANSI_C_SUPPORT_INCLUDED
+#define ANSI_C_SUPPORT_INCLUDED
+
+#define ANSI_C_GRAMMAR_NAME "ANSI-C"
+#define ANSI_C_GRAMMAR_VERSION "1.1.0"
+#define ANSI_C_GRAMMAR_DATE "2026/10/06"
+
+/* GPP is not cpp: avoid cpp stringification/token-pasting assumptions.
+ * Keep version metadata as ordinary quoted strings, not pasted tokens.
+ */
+#define ANSI_C_VERSION_STRING "ANSI-C 1.1.0"
+
+#ifdef ANSI_C_NO_ATN
+#define ANSI_C_USE_ATN false
+#else
+#define ANSI_C_USE_ATN true
+#endif
+
+#ifndef ANSI_C_LOOKAHEAD_DEPTH
+#define ANSI_C_LOOKAHEAD_DEPTH 8
+#endif
+#if ANSI_C_LOOKAHEAD_DEPTH < 1 || ANSI_C_LOOKAHEAD_DEPTH > 64
+#error ANSI_C_LOOKAHEAD_DEPTH must be between 1 and 64
+#endif
+
+#ifdef ANSI_C_DEBUG
+#define ANSI_C_DEBUG_LEVEL 1
+#else
+#define ANSI_C_DEBUG_LEVEL 0
+#endif
+
+#endif

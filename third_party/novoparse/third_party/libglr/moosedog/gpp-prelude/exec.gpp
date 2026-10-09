@@ -1,0 +1,6 @@
+/* exec.gpp -- documents the CompilePipeline steps; execution is the CLI. */
+#mode standard C
+#ifndef MOOSEDOG_GPP_EXEC_INCLUDED
+#define MOOSEDOG_GPP_EXEC_INCLUDED
+#define MD_PIPELINE_DEFAULT Preprocess
+#endif

@@ -1,0 +1,96 @@
+/* ====================================================================== *
+ *  Support.gpp — GPP Preprocessing Support for JSON Grammar              *
+ *                                                                        *
+ *  Authors: Chubak Bidpaa <chubakbidpaa@riseup.net>                    *
+ *           Sami Dena <sami.dena1993@gmail.com>                         *
+ *                                                                        *
+ *  License: MIT                                                          *
+ *  Revision: v1.0.0-2026/10/05                                          *
+ * ====================================================================== */
+
+/* ---------------------------------------------------------------------- *
+ *  Mode Configuration — ensure GPP operates in the correct mode.         *
+ * ---------------------------------------------------------------------- */
+#mode standard C
+
+/* ---------------------------------------------------------------------- *
+ *  Utility Macros — general-purpose helpers.                             *
+ * ---------------------------------------------------------------------- */
+#define CONCAT(a, b) a##b
+#define STRINGIFY(x) #x
+
+/* ---------------------------------------------------------------------- *
+ *  Configuration metadata.                                             *
+ * ---------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- *
+ * ---------------------------------------------------------------------- */
+
+/* Check whether rewriting is enabled. */
+#ifndef JSON_PARSER_NO_REWRITE
+    #define REWRITING_ENABLED 1
+#else
+    #define REWRITING_ENABLED 0
+#endif
+
+/* Check whether Makefile emission is requested. */
+#ifdef JSON_PARSER_EMIT_MAKEFILE
+    #define EMIT_MAKEFILE 1
+#else
+    #define EMIT_MAKEFILE 0
+#endif
+
+/* Check whether CMakeLists emission is requested. */
+#ifdef JSON_PARSER_EMIT_CMAKEFILE
+    #define EMIT_CMAKEFILE 1
+#else
+    #define EMIT_CMAKEFILE 0
+#endif
+
+/* ---------------------------------------------------------------------- *
+ *  Debugging Macros — conditional compilation for development.           *
+ * ---------------------------------------------------------------------- */
+
+/* Emit debug annotations when JSON_PARSER_DEBUG is defined. */
+#ifdef JSON_PARSER_DEBUG
+    #define DEBUG_COMMENT(msg) /* DEBUG: msg */
+    #define DEBUG_NODE(NodeName) \
+        DebugAnnotation(NodeName) { Message = STRINGIFY(NodeName) }
+#else
+    #define DEBUG_COMMENT(msg)
+    #define DEBUG_NODE(NodeName)
+#endif
+
+/* ---------------------------------------------------------------------- *
+ *  Version and Metadata Macros.                                          *
+ * ---------------------------------------------------------------------- */
+
+#define GRAMMAR_NAME "JSON"
+#define GRAMMAR_VERSION "1.0.0"
+#define GRAMMAR_DATE "2026/10/05"
+#define GRAMMAR_STANDARD "https://json.org"
+
+/* Full version string. */
+#define VERSION_STRING CONCAT(CONCAT(GRAMMAR_NAME, -), GRAMMAR_VERSION)
+
+/* ---------------------------------------------------------------------- *
+ *  Type Aliases — for clarity in complex grammars.                       *
+ * ---------------------------------------------------------------------- */
+
+#define String  char*
+#define Integer int
+#define Float   double
+#define Boolean int
+
+/* ---------------------------------------------------------------------- *
+ *  Reserved for Future Extensions.                                       *
+ * ---------------------------------------------------------------------- */
+
+/* Placeholder for custom extensions. */
+#ifdef JSON_PARSER_EXTENSIONS
+    #include "extensions.gpp"
+#endif
+
+/* ====================================================================== *
+ *  End of Support.gpp                                                     *
+ * ====================================================================== */
+

@@ -1,0 +1,4 @@
+%grammar Ambiguous;
+%disambiguate first;
+
+expression: expression "+" expression => Add | "n" => Name;

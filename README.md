@@ -8,7 +8,7 @@ Termlib is a portable terminal systems library written in C11. It provides PTY a
 - **`libtermscript_standalone`** — the standalone Termscript parser and VM.
 - **`libtermscript`** — Termlib bindings for the Termscript VM, including the Termlib C backend.
 - **`libtermscript_stdlib`** — native standard modules and `.tsc` companion modules.
-- **`termscript`** — command-line interpreter and ahead-of-time C compiler.
+- **`termscript`** — command-line interpreter and ahead-of-time C/QBE compiler.
 - **`termlib.hpp`** — header-only C++11 RAII wrappers for the C API.
 
 ## Quick start
@@ -44,3 +44,10 @@ The 22-chapter manual is in [`manual/`](manual/). Start with:
 ## License
 
 See the license files in the repository and in `third_party/` for component-specific terms.
+## QBE native compilation
+
+On Linux x86-64, build a native executable with
+`termscript --backend qbe -o program script.tsc`. The bundled QBE backend
+generates instructions and Keystone assembles them. Use `--backend qbe -c`
+to emit QBE IL. See [native compilation](manual/23-native-compilation.md)
+for build options, runtime linkage, and embedding APIs.

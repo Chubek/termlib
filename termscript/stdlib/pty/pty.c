@@ -66,9 +66,13 @@ p_spawn (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
   pid_t pid;
   pty_t *h;
   char desc[96];
+  int64_t rows = 0, cols = 0;
   (void) ud;
-  if (ts_std_argc (vm, argc, 1, 1, error, "spawn") != TS_OK)
+  if (ts_std_argc (vm, argc, 1, 3, error, "spawn") != TS_OK)
     return TS_ERR_INVAL;
+  if (argc == 2 || (argc == 3 && (ts_std_int (argv + 1, &rows, error, "rows") ||
+      ts_std_int (argv + 2, &cols, error, "cols") || rows < 1 || rows > 65535 || cols < 1 || cols > 65535)))
+    return ts_std_inval (error, "spawn: expected command [rows cols], dimensions 1..65535");
   if (ts_std_str (&argv[0], &cmd, error, "spawn") != TS_OK)
     return TS_ERR_INVAL;
   master = posix_openpt (O_RDWR | O_NOCTTY);
@@ -137,6 +141,15 @@ p_spawn (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
           { int e = errno; close (slave); close (master); close (errors[0]); close (errors[1]); errno = e; return ts_std_system (error, "spawn error pipe"); }
         close (errors[i]); errors[i] = copy;
       }
+  /* Initial geometry must be set before the child can exec or query it. */
+  if (argc == 3)
+    {
+      struct winsize ws = {0}; int rc;
+      ws.ws_row = (unsigned short) rows; ws.ws_col = (unsigned short) cols;
+      do { rc = ioctl (slave, TIOCSWINSZ, &ws); } while (rc < 0 && errno == EINTR);
+      if (rc < 0)
+        { int saved = errno; close (slave); close (master); close (errors[0]); close (errors[1]); errno = saved; return ts_std_system (error, "spawn size"); }
+    }
   pid = fork ();
   if (pid < 0)
     {

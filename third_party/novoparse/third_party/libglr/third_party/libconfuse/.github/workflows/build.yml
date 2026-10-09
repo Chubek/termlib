@@ -1,0 +1,169 @@
+name: Bob the Builder
+
+# Run on all branches, including all pull requests, except the 'dev'
+# branch since that's where we run Coverity Scan (limited tokens/day)
+on:
+  push:
+    branches:
+      - '**'
+      - '!dev'
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  build:
+    # Verify we can build on latest Ubuntu with both gcc and clang
+    name: ${{ matrix.compiler }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+      fail-fast: false
+    env:
+      MAKEFLAGS: -j3
+      CC: ${{ matrix.compiler }}
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install tree doxygen autopoint
+      - uses: actions/checkout@v6
+      - name: Configure
+        run: |
+          ./autogen.sh
+          ./configure --prefix= --disable-silent-rules
+      - name: Build
+        run: |
+          make
+      - name: Install to ~/tmp and Inspect
+        run: |
+          DESTDIR=~/tmp make install-strip
+          tree ~/tmp
+      - name: Run Unit Tests
+        run: |
+          make check || (cat tests/test-suite.log; false)
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v7
+        with:
+          name: libconfuse-test-${{ matrix.compiler }}
+          path: tests/*
+  asan:
+    # Run the unit tests under AddressSanitizer + UBSan (LSan ships with
+    # ASan on Linux).  -fno-sanitize-recover makes UBSan abort instead of
+    # just warn, so latent memory and undefined-behavior errors fail CI.
+    name: asan
+    runs-on: ubuntu-latest
+    env:
+      MAKEFLAGS: -j3
+      CC: clang
+      CFLAGS: -fsanitize=address,undefined,implicit-conversion -fno-sanitize-recover=all -fno-omit-frame-pointer -g -O1
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install tree doxygen autopoint clang
+      - uses: actions/checkout@v6
+      - name: Configure
+        run: |
+          ./autogen.sh
+          ./configure --prefix=
+      - name: Build and unit test under AddressSanitizer and UBSan
+        run: |
+          make check || (cat tests/test-suite.log; false)
+  distcheck:
+    # Verify the release tarball builds, tests, and is self-contained
+    name: distcheck
+    runs-on: ubuntu-latest
+    env:
+      MAKEFLAGS: -j3
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install tree doxygen autopoint gettext
+      - uses: actions/checkout@v6
+      - name: Configure
+        run: |
+          ./autogen.sh
+          ./configure --prefix=
+      - name: Build & Check
+        run: |
+          make distcheck || (find . -name test-suite.log -exec cat {} +; false)
+  macos:
+    # Build and test on macOS.  The 'compat' variant forces the bundled
+    # fmemopen() replacement (ac_cv_func_fmemopen=no) so its funopen path
+    # is exercised even though modern macOS has a native fmemopen, see #147.
+    name: macOS ${{ matrix.fmemopen }}
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - fmemopen: native
+            confflags: ""
+          - fmemopen: compat
+            confflags: "ac_cv_func_fmemopen=no"
+      fail-fast: false
+    env:
+      MAKEFLAGS: -j3
+    steps:
+      - name: Install dependencies
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install autoconf automake libtool gettext flex doxygen
+      - uses: actions/checkout@v6
+      - name: Configure
+        run: |
+          export PATH="$(brew --prefix gettext)/bin:$(brew --prefix flex)/bin:$PATH"
+          ./autogen.sh
+          ./configure --prefix= ${{ matrix.confflags }}
+      - name: Build
+        run: make
+      - name: Test
+        run: make check || (cat tests/test-suite.log; false)
+  msys2:
+    # Verify the library builds and tests on Windows via MSYS2/MINGW64, see #172
+    name: msys2
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: git gcc make autoconf automake libtool flex gettext-devel pkgconf doxygen tree
+      - name: Configure
+        run: |
+          ./autogen.sh
+          ./configure --prefix= --disable-examples
+      - name: Build
+        run: make
+      - name: Test
+        run: make check || (cat tests/test-suite.log; false)
+      - name: Install and inspect
+        run: |
+          DESTDIR=~/tmp make install-strip
+          tree ~/tmp
+  ilp32:
+    # Build and test as a 32-bit (ILP32) target, where long is 32-bit, to
+    # prove CFG_INT64 & co. carry full width and that CFG_INT is unchanged
+    name: ilp32
+    runs-on: ubuntu-latest
+    env:
+      MAKEFLAGS: -j3
+      CC: gcc -m32
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install gcc-multilib tree doxygen autopoint gettext
+      - uses: actions/checkout@v6
+      - name: Configure
+        run: |
+          ./autogen.sh
+          ./configure --prefix=
+      - name: Build and test
+        run: make check || (cat tests/test-suite.log; false)

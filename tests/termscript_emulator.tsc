@@ -1,0 +1,15 @@
+G:import "poll";
+G:import "x11";
+G:import "drm";
+const L = G:load "std.list";
+const p = poll_m:new;
+const events = poll_m:wait p 0;
+const count = L:len events;
+G:puts count;
+const x = x11_m:available;
+const d = drm_m:available;
+G:puts x;
+G:puts d;
+poll_m:close p;
+poll_m:close p;
+G:puts "emulator modules OK";

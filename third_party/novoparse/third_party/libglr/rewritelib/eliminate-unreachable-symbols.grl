@@ -1,0 +1,4 @@
+(rewrite
+  (name "eliminate-unreachable-symbols")
+  (rules
+    (eliminate-unreachable-symbols)))

@@ -1,0 +1,4 @@
+(rewrite
+  (name "chomsky-normal-form")
+  (rules
+    (chomsky-normal-form)))

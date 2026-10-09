@@ -1,0 +1,6 @@
+/* exec-shell.gpp -- shell hook conventions (see libsh-prelude). */
+#mode standard C
+#ifndef MOOSEDOG_GPP_EXEC_SHELL_INCLUDED
+#define MOOSEDOG_GPP_EXEC_SHELL_INCLUDED
+#define MD_SHELL_HOOK_SUFFIX ".sh"
+#endif

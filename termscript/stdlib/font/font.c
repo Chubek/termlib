@@ -1,5 +1,6 @@
 #include "font/font.h"
 #include "common/text.h"
+#include "common/emulator.h"
 #include <fontconfig/fontconfig.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -217,6 +218,85 @@ f_shape (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Err
     }
   st = ts_std_list_wrap (ret, l, e); l = NULL;
 done: hb_buffer_destroy (buffer); ts_std_list_free (l); return st;
+}
+
+static uint32_t
+grid_color (int32_t color, bool foreground)
+{
+  static const uint32_t ansi[16] = {0x000000,0x800000,0x008000,0x808000,0x000080,0x800080,0x008080,0xc0c0c0,
+    0x808080,0xff0000,0x00ff00,0xffff00,0x0000ff,0xff00ff,0x00ffff,0xffffff};
+  static const unsigned levels[6] = {0,95,135,175,215,255};
+  if (color < 0) return foreground ? 0xd0d0d0 : 0x101820;
+  if (color & TS_COLOR_RGB) return (uint32_t) color & 0xffffff;
+  if (color < 16) return ansi[color];
+  if (color < 232) { unsigned n = (unsigned) color - 16; return levels[n/36] << 16 | levels[(n/6)%6] << 8 | levels[n%6]; }
+  if (color < 256) { unsigned n = 8 + ((unsigned) color - 232)*10; return n * 0x10101; }
+  return foreground ? 0xd0d0d0 : 0x101820;
+}
+
+TS_Status
+ts_font_grid (const TS_Value *value, const ts_grid_t *grid, unsigned cw, unsigned ch, uint32_t *pixels, TS_Error *e)
+{
+  font_t *f = ts_std_handle (value, &font_tag, e, "emulator font");
+  hb_font_t *font;
+  size_t width = grid->cols * cw;
+  if (!f) return TS_ERR_INVAL;
+  if (FT_Set_Pixel_Sizes (f->face, 0, ch > 2 ? ch - 2 : ch))
+    { ts_error_set (e, TS_ERR_SYSTEM, 0, 0, "font: cannot set pixel size"); return TS_ERR_SYSTEM; }
+  font = hb_ft_font_create_referenced (f->face);
+  if (!font) return ts_std_oom (e);
+  for (size_t row = 0; row < grid->rows; row++) for (size_t col = 0; col < grid->cols; col++)
+    {
+      const ts_cell_t *cell = &grid->cells[row * grid->cols + col];
+      uint32_t bg = grid_color ((cell->style.attrs & TS_ATTR_REVERSE) ? cell->style.fg : cell->style.bg, false);
+      for (unsigned y = 0; y < ch; y++) for (unsigned x = 0; x < cw; x++)
+        pixels[(row * ch + y) * width + col * cw + x] = 0xff000000 | bg;
+    }
+  for (size_t row = 0; row < grid->rows; row++) for (size_t col = 0; col < grid->cols; col++)
+    {
+      const ts_cell_t *cell = &grid->cells[row * grid->cols + col];
+      uint32_t fg = grid_color ((cell->style.attrs & TS_ATTR_REVERSE) ? cell->style.bg : cell->style.fg, true);
+      if (!cell->width || (cell->style.attrs & TS_ATTR_HIDDEN)) continue;
+      if ((!cell->text[0] || !strcmp (cell->text, " ")) &&
+          !(cell->style.attrs & (TS_ATTR_UNDERLINE | TS_ATTR_STRIKE))) continue;
+      if (cell->style.attrs & TS_ATTR_DIM) fg = (fg >> 1) & 0x7f7f7f;
+      hb_buffer_t *b = hb_buffer_create ();
+      hb_buffer_add_utf8 (b, cell->text, -1, 0, -1); hb_buffer_guess_segment_properties (b);
+      hb_shape (font, b, NULL, 0);
+      if (!hb_buffer_allocation_successful (b)) { hb_buffer_destroy (b); hb_font_destroy (font); return ts_std_oom (e); }
+      unsigned count; hb_glyph_info_t *info = hb_buffer_get_glyph_infos (b, &count);
+      hb_glyph_position_t *pos = hb_buffer_get_glyph_positions (b, &count);
+      int pen = 0, baseline = (int) (f->face->size->metrics.ascender >> 6);
+      if (baseline >= (int) ch) baseline = (int) ch - 1;
+      unsigned span = (unsigned) ((grid->cols - col < cell->width ? grid->cols - col : cell->width) * cw);
+      for (unsigned k = 0; k < count; k++)
+        {
+          if (FT_Load_Glyph (f->face, info[k].codepoint, FT_LOAD_RENDER)) continue;
+          FT_GlyphSlot glyph = f->face->glyph; FT_Bitmap *map = &glyph->bitmap;
+          int left = (pen + pos[k].x_offset) / 64 + glyph->bitmap_left;
+          int top = baseline - pos[k].y_offset / 64 - glyph->bitmap_top;
+          for (unsigned y = 0; y < map->rows; y++) for (unsigned x = 0; x < map->width; x++)
+            {
+              int dx = left + (int) x, dy = top + (int) y;
+              if (dx < 0 || dy < 0 || (unsigned) dx >= span || (unsigned) dy >= ch) continue;
+              const unsigned char *scan = map->buffer + (map->pitch >= 0 ? y : map->rows-1-y) * (size_t) abs (map->pitch);
+              unsigned alpha = map->pixel_mode == FT_PIXEL_MODE_GRAY ? scan[x] :
+                map->pixel_mode == FT_PIXEL_MODE_MONO ? ((scan[x/8] & (128 >> (x%8))) ? 255 : 0) : 0;
+              size_t at = (row * ch + (unsigned) dy) * width + col * cw + (unsigned) dx;
+              uint32_t dst = pixels[at], rgb = 0xff000000;
+              for (unsigned shift = 0; shift < 24; shift += 8)
+                rgb |= (((((fg >> shift)&255)*alpha + ((dst >> shift)&255)*(255-alpha)+127)/255) << shift);
+              pixels[at] = rgb;
+            }
+          pen += pos[k].x_advance;
+        }
+      hb_buffer_destroy (b);
+      if (cell->style.attrs & TS_ATTR_UNDERLINE)
+        for (unsigned x = 0; x < span; x++) pixels[(row*ch+ch-1)*width+col*cw+x] = 0xff000000 | fg;
+      if (cell->style.attrs & TS_ATTR_STRIKE)
+        for (unsigned x = 0; x < span; x++) pixels[(row*ch+ch/2)*width+col*cw+x] = 0xff000000 | fg;
+    }
+  hb_font_destroy (font); return TS_OK;
 }
 
 static const TS_FuncDef funcs[] = {
