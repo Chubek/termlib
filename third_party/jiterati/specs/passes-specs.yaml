@@ -1,0 +1,322 @@
+schema_version: 1
+ir: jiterati::Function (include/Jiterati.hpp), independent of ir::TACFunction
+registry: Passlib/Passes.def
+documentation: docs/passes.md
+analysis_lifetime: results describe the last function processed and require recomputation after mutation
+defaults:
+  analysis: &analysis
+    category: analysis
+    required_analyses: []
+    invalidated_analyses: []
+    preserved_analyses: [all]
+    inputs: [function]
+    outputs: [PassResult]
+    configurable_options: []
+    execution_order_constraints: after mutations of the analyzed input
+    parallel_safety: independent instances on independent functions; do not share a pass instance
+    deterministic_behavior: true
+  scalar: &scalar
+    category: transform
+    required_analyses: []
+    invalidated_analyses: [LivenessAnalysis, EscapeAnalysis, RegisterAllocation]
+    preserved_analyses: [CFGAnalysis, DominatorAnalysis]
+    inputs: [function]
+    outputs: [function]
+    configurable_options: []
+    execution_order_constraints: valid typed SSA input; cleanup with copy propagation and DCE
+    parallel_safety: independent instances on independent functions
+    deterministic_behavior: true
+  cfg: &cfg
+    <<: *scalar
+    invalidated_analyses: [all]
+    preserved_analyses: []
+    execution_order_constraints: explicit CFG successors and Phi incoming-block metadata
+passes:
+  - <<: *analysis
+    name: CFGAnalysis
+    pipeline_token: cfg-analysis
+    description: Computes deterministic DFS postorder of reachable blocks.
+    outputs: [PassResult.postorder]
+  - <<: *analysis
+    name: DominatorAnalysis
+    pipeline_token: dominator-analysis
+    description: Computes reachable dominator sets by iterative predecessor intersection.
+    required_analyses: [CFGAnalysis]
+    outputs: [PassResult.dominators]
+    analysis_execution: recomputes CFG reachability locally
+  - <<: *analysis
+    name: LivenessAnalysis
+    pipeline_token: liveness-analysis
+    description: Computes backward SSA liveness with predecessor-specific Phi edge uses.
+    required_analyses: [CFGAnalysis]
+    outputs: [PassResult.live_in, PassResult.live_out]
+    legality: missing incoming-block metadata conservatively treats all Phi inputs as live on every edge
+  - <<: *analysis
+    name: EscapeAnalysis
+    pipeline_token: escape-analysis
+    description: Finds stack allocations used outside load/store address positions through copy aliases.
+    outputs: [PassResult.escaping_allocas]
+    legality: derived pointers and Phi/select aliases conservatively escape
+  - <<: *analysis
+    name: RegisterAllocation
+    pipeline_token: register-allocation
+    description: Builds SSA interference and greedily colors with eight target-independent virtual registers.
+    required_analyses: [LivenessAnalysis]
+    outputs: [PassResult.registers, PassResult.live_in, PassResult.live_out]
+    analysis_execution: recomputes liveness locally
+    legality: preserves SSA identity; color -1 reports a spill; physical ABI allocation remains backend-local
+  - <<: *scalar
+    name: ConstantFolding
+    pipeline_token: constant-folding
+    description: Evaluates modular integer arithmetic, comparisons, legal shifts and integer conversions at exact widths.
+    legality: preserves division traps, signed MIN/-1 and out-of-width shifts; excludes floating point
+  - <<: *scalar
+    name: ConstantPropagation
+    pipeline_token: constant-propagation
+    description: Resolves constant copies, folds operations and simplifies selects/Phis to a fixed point.
+    legality: never substitutes an arithmetic operand for an unevaluated arithmetic result
+  - <<: *scalar
+    name: CopyPropagation
+    pipeline_token: copy-propagation
+    description: Resolves transitive same-type SSA copies with cycle detection.
+    legality: branch labels, call symbols and Phi labels are excluded from SSA use rewriting
+  - <<: *scalar
+    name: DeadCodeRemoval
+    pipeline_token: dead-code-removal
+    description: Iteratively erases unused nontrapping instructions from block lists and storage.
+    legality: retains memory operations, allocations, calls, division/remainder and unproven shifts
+  - <<: *scalar
+    name: DeadCodeElimination
+    pipeline_token: dead-code-elimination
+    description: Marks observable/trapping roots and sweeps dead SSA graphs, including Phi cycles.
+    legality: retains all potential traps and observable effects
+  - <<: *scalar
+    name: StrengthReduction
+    pipeline_token: strength-reduction
+    description: Simplifies integer identities and power-of-two multiplication on either operand.
+    legality: modular integer arithmetic only; preserves exact result and shift operand types
+  - <<: *scalar
+    name: PeepholeOptimization
+    pipeline_token: peephole-optimization
+    description: Runs algebraic, select and Phi simplification followed by copy propagation.
+  - <<: *scalar
+    name: CommonSubexpressionElimination
+    pipeline_token: common-subexpression-elimination
+    description: Reuses local or dominating identical nontrapping expressions.
+    required_analyses: [DominatorAnalysis]
+    analysis_execution: recomputes reachable dominators locally
+    legality: excludes loads, calls, allocations and Phi expressions; no sibling-block reuse
+  - <<: *cfg
+    name: ControlFlowOptimization
+    pipeline_token: control-flow-optimization
+    description: Folds constant/equal-target branches, removes unreachable blocks and merges linear regions.
+    legality: merges single-predecessor blocks only; repairs reciprocal CFG edges and Phi predecessors
+  - <<: *scalar
+    name: FunctionInlining
+    pipeline_token: function-inlining
+    description: Clones bounded single-block callees with constant-pool and parameter remapping.
+    inputs: [function, module_callees]
+    legality: at most 32 stored callee instructions; excludes recursive callees, calls, Phis and branching
+    parallel_safety: independent caller instances only while callees remain immutable
+  - <<: *scalar
+    name: InstructionScheduling
+    pipeline_token: instruction-scheduling
+    description: Schedules dependency-ready expressions by critical height within nontrapping runs.
+    legality: memory, Phi, calls, terminators and potential traps delimit scheduling regions
+  - <<: *scalar
+    name: LoopInvariantCodeMotion
+    pipeline_token: loop-invariant-code-motion
+    description: Hoists natural-loop invariants into unique unconditional preheaders.
+    required_analyses: [DominatorAnalysis]
+    analysis_execution: recomputes dominators and natural-loop membership locally
+    legality: nontrapping expressions only; every operand must be available at the preheader
+  - <<: *cfg
+    name: LoopUnrolling
+    pipeline_token: loop-unrolling
+    description: Completely expands statically simulated post-tested single-block counted loops.
+    legality: one induction Phi; constant initial/step/bound; at most 16 iterations and 128 instruction visits
+  - <<: *cfg
+    name: LoopPeeling
+    pipeline_token: loop-peeling
+    description: Expands the first iteration and updates the induction entry; completely expands one-trip loops.
+    legality: same static-domain legality as LoopUnrolling; retains the remaining loop and live-outs
+  - <<: *cfg
+    name: LoopFusion
+    pipeline_token: loop-fusion
+    description: Emits a statically zipped schedule of adjacent independent equal-trip-count loops.
+    legality: pure nontrapping bodies, no cross-loop SSA dependencies, bounded constant domains
+  - <<: *cfg
+    name: LoopInterchange
+    pipeline_token: loop-interchange
+    description: Emits an interchanged static schedule of rectangular two-level independent counted nests.
+    legality: canonical outer header/latch, pure inner body, at most 128 instruction visits; no memory reorder
+  - <<: *cfg
+    name: PolyhedralOptimization
+    pipeline_token: polyhedral-optimization
+    description: Applies bounded static-domain scheduling, full expansion and integer cleanup.
+    legality: restricted static scalar domains; not a general affine dependence solver
+  - <<: *scalar
+    name: PartialRedundancyElimination
+    pipeline_token: partial-redundancy-elimination
+    description: Inserts missing predecessor computations and merges available expressions with a Phi.
+    required_analyses: [DominatorAnalysis]
+    analysis_execution: recomputes dominators locally
+    legality: at least one available predecessor; nontrapping expression; operands available on every inserted edge
+  - <<: *scalar
+    name: TailCallOptimization
+    pipeline_token: tail-call-optimization
+    description: Marks ABI-compatible adjacent call/return instructions as tail-call candidates.
+    invalidated_analyses: []
+    preserved_analyses: [all]
+    legality: identical caller/callee signatures; no stack allocations; backend must consume eligibility metadata
+  - <<: *scalar
+    name: AutoVectorize
+    pipeline_token: autovectorize
+    description: Plans independent same-type/opcode scalar integer SIMD groups using host capabilities.
+    invalidated_analyses: []
+    preserved_analyses: [all]
+    outputs: [Instruction.vector_width]
+    deterministic_behavior: false
+    legality: host-dependent widths; metadata only; scalar IR semantics and instruction names are preserved
+  - <<: *scalar
+    name: AlgebraicSimplification
+    pipeline_token: algebraic-simplification
+    description: Eliminates integer identities, annihilators, subtraction of self and division by one.
+  - <<: *scalar
+    name: Reassociation
+    pipeline_token: reassociation
+    description: Combines constants in associative modular integer add/multiply/bitwise chains.
+    legality: excludes floating-point reassociation
+  - <<: *scalar
+    name: CommutativeCanonicalization
+    pipeline_token: commutative-canonicalization
+    description: Orders integer commutative operands deterministically with constants on the right.
+  - <<: *scalar
+    name: ComparisonCanonicalization
+    pipeline_token: comparison-canonicalization
+    description: Swaps integer greater-than predicates into equivalent less-than predicates.
+  - <<: *scalar
+    name: SelectSimplification
+    pipeline_token: select-simplification
+    description: Replaces constant-condition and identical-arm selects with the selected value.
+  - <<: *scalar
+    name: PhiSimplification
+    pipeline_token: phi-simplification
+    description: Replaces equal nonself Phi inputs with their common value.
+    legality: does not invent a value for an all-self Phi cycle
+  - <<: *scalar
+    name: RedundantCastElimination
+    pipeline_token: redundant-cast-elimination
+    description: Removes identity integer casts and truncate-after-extension round trips.
+    legality: never eliminates extension after lossy truncation
+  - <<: *scalar
+    name: DoubleNegationElimination
+    pipeline_token: double-negation-elimination
+    description: Cancels paired same-type integer negations under modular arithmetic.
+  - <<: *scalar
+    name: DoubleNotElimination
+    pipeline_token: double-not-elimination
+    description: Cancels paired same-type bitwise complements.
+  - <<: *scalar
+    name: BitwiseIdempotence
+    pipeline_token: bitwise-idempotence
+    description: Folds identical operands of integer AND, OR and XOR.
+  - <<: *scalar
+    name: BitwiseAbsorption
+    pipeline_token: bitwise-absorption
+    description: Applies both commuted AND/OR absorption laws.
+  - <<: *scalar
+    name: BitwiseComplementFolding
+    pipeline_token: bitwise-complement-folding
+    description: Folds AND/OR/XOR of an integer and its bitwise complement.
+  - <<: *scalar
+    name: ShiftSimplification
+    pipeline_token: shift-simplification
+    description: Removes zero shifts and proven in-range shifts of zero.
+    legality: unknown, negative and out-of-width shift counts are retained
+  - <<: *scalar
+    name: ShiftCombination
+    pipeline_token: shift-combination
+    description: Combines constant same-direction shift chains.
+    legality: individual and summed shift counts must be in range
+  - <<: *scalar
+    name: UnsignedDivisionReduction
+    pipeline_token: unsigned-division-reduction
+    description: Replaces unsigned division by powers of two with logical right shifts.
+    legality: zero divisors are never simplified
+  - <<: *scalar
+    name: UnsignedRemainderReduction
+    pipeline_token: unsigned-remainder-reduction
+    description: Replaces unsigned remainder by powers of two with low-bit masks.
+    legality: zero divisors are never simplified
+  - <<: *scalar
+    name: MultiplyByNegativeOne
+    pipeline_token: multiply-by-negative-one
+    description: Replaces multiplication by the all-ones integer with modular negation.
+  - <<: *scalar
+    name: SubtractionToAddition
+    pipeline_token: subtraction-to-addition
+    description: Replaces subtraction of an integer constant with addition of its modular negative.
+  - <<: *scalar
+    name: NegationPropagation
+    pipeline_token: negation-propagation
+    description: Changes add/subtract of a negated integer into subtract/add.
+  - <<: *scalar
+    name: BooleanComparisonSimplification
+    pipeline_token: boolean-comparison-simplification
+    description: Replaces i1 equality/inequality with constants by copies or boolean complements.
+    legality: both compared operands must have i1 type
+  - <<: *scalar
+    name: BooleanSelectSimplification
+    pipeline_token: boolean-select-simplification
+    description: Replaces boolean truth-table selects with their condition or complement.
+    legality: condition and result must be i1
+  - <<: *scalar
+    name: DistributiveFactoring
+    pipeline_token: distributive-factoring
+    description: Factors a common multiplicand from a sum of integer products.
+    legality: both product results must have one use; creates the sum before the result instruction
+  - <<: *scalar
+    name: MaskSimplification
+    pipeline_token: mask-simplification
+    description: Combines nested AND/OR constant masks including commuted operand positions.
+  - <<: *scalar
+    name: LoadForwarding
+    pipeline_token: load-forwarding
+    description: Forwards the most recent matching exact-address/type store into subsequent loads.
+    legality: block-local; calls and every other store invalidate the remembered store
+  - <<: *scalar
+    name: RedundantLoadElimination
+    pipeline_token: redundant-load-elimination
+    description: Reuses exact-address/type scalar loads between memory clobbers.
+    legality: every store/call clears availability; no assumptions about pointer disjointness
+  - <<: *scalar
+    name: DeadStoreElimination
+    pipeline_token: dead-store-elimination
+    description: Erases exact-address/type stores overwritten across nontrapping expressions.
+    legality: reads, calls, other stores and potential traps stop availability
+  - <<: *scalar
+    name: StoreOfLoadElimination
+    pipeline_token: store-of-load-elimination
+    description: Erases unchanged load-result writebacks to nonescaping stack allocations.
+    required_analyses: [EscapeAnalysis]
+    analysis_execution: recomputes allocation escapes locally
+    legality: block-local; unknown memory is never assumed writable
+  - <<: *scalar
+    name: StackPromotion
+    pipeline_token: stack-promotion
+    description: Replaces initialized block-local stack loads by SSA values and erases stores.
+    required_analyses: [EscapeAnalysis]
+    analysis_execution: recomputes allocation escapes locally
+    legality: nonescaping slot; uniform access types; no cross-block access or uninitialized reads
+  - <<: *cfg
+    name: JumpThreading
+    pipeline_token: jump-threading
+    description: Bypasses unconditional branch-only trampolines with cycle detection.
+    legality: the destination must be Phi-free
+  - <<: *cfg
+    name: UnreachableBlockElimination
+    pipeline_token: unreachable-block-elimination
+    description: Erases unreachable blocks, contained instructions, reciprocal edges and obsolete Phi inputs.
+    required_analyses: [CFGAnalysis]
+    analysis_execution: recomputes reachability locally

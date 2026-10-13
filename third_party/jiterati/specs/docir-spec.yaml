@@ -1,0 +1,41 @@
+schema_version: 1
+document: DocIR
+description: DOM-based document intermediate language with XtAs/markup serializers and CSSOM emission.
+model:
+  node_kinds: [element, text, comment]
+  containers: [document, element]
+  attributes: string_map
+  cssom: [stylesheet, rule, selector, declarations]
+kernels:
+  - name: module_reference
+    description: Function/block/instruction reference for one module.
+    inputs: [module_name, function_summaries]
+    outputs: [document]
+  - name: backend_catalog
+    description: Every backend including all third_party/isa targets.
+    inputs: []
+    outputs: [document]
+  - name: pass_catalog
+    description: Pass pipeline reference including AutoVectorize.
+    inputs: []
+    outputs: [document]
+  - name: cli_reference
+    description: CLI command reference.
+    inputs: []
+    outputs: [document]
+  - name: article
+    description: Free-form article wrapper.
+    inputs: [title, paragraphs]
+    outputs: [document]
+serializations:
+  - name: xtas
+    description: Canonical XML application syntax under the xt:as namespace.
+    media_type: application/xtas+xml
+  - name: html
+    description: HTML5 mirror of the same DOM.
+    media_type: text/html
+  - name: css
+    description: CSSOM text emission from the default theme or custom sheets.
+    media_type: text/css
+cli:
+  render: jiterati-cli doc --kernel backends|passes|cli|<title> --format xtas|html|css

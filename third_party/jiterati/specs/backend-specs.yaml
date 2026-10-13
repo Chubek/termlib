@@ -1,0 +1,222 @@
+schema_version: 1
+backends:
+  - name: AMD64
+    supported_targets: [x86_64-linux-gnu, x86_64-darwin, x86_64-windows-msvc]
+    architecture: AMD64 / x86-64
+    dataset: .agents/datasets/amd64.lua
+    relocation_model: [static, pic]
+    object_formats: [elf64, macho64, coff]
+    executable_formats: [elf, macho, pe]
+    code_generation_stages: [instruction_selection, register_allocation, rewrite, peephole, emission]
+    supported_features: [integer_arithmetic, branches, calls, basic_memory_ops]
+    limitations: [full vector ISA coverage is dataset-driven and may be incomplete in handwritten code]
+  - name: AArch64
+    supported_targets: [aarch64-linux-gnu, arm64-darwin]
+    architecture: ARM64 / AArch64
+    dataset: .agents/datasets/aarch64.lua
+    relocation_model: [static, pic]
+    object_formats: [elf64, macho64]
+    executable_formats: [elf, macho]
+    code_generation_stages: [instruction_selection, register_allocation, rewrite, peephole, emission]
+    supported_features: [integer_arithmetic, branches, calls, basic_memory_ops]
+    limitations: [platform ABI differences must be represented explicitly]
+  - name: RV64
+    supported_targets: [riscv64-linux-gnu]
+    architecture: RISC-V 64
+    dataset: .agents/datasets/rv64.lua
+    relocation_model: [static, pic]
+    object_formats: [elf64]
+    executable_formats: [elf]
+    code_generation_stages: [instruction_selection, register_allocation, rewrite, peephole, emission]
+    supported_features: [rv64i, integer_arithmetic, branches, calls]
+    limitations: [extensions beyond baseline RV64 require feature validation]
+  - name: WASM
+    supported_targets: [wasm32-unknown-unknown, wasm64-unknown-unknown]
+    architecture: WebAssembly
+    dataset: .agents/datasets/wasm.lua
+    relocation_model: [module]
+    object_formats: [wasm]
+    executable_formats: [wasm]
+    code_generation_stages: [instruction_selection, virtual_register_mapping, rewrite, peephole, emission]
+    supported_features: [stack_machine_emission, integer_arithmetic, structured_control_flow]
+    limitations: [host imports and linear-memory ABI must be specified by embedding configuration]
+  - name: ISA-ARM32
+    supported_targets: [arm-linux-gnueabihf]
+    architecture: ARM32 / ARMv7-A
+    dataset: third_party/isa/arm32.isa
+    relocation_model: [static, pic]
+    object_formats: [elf32]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble, elf_link]
+    supported_features: [integer_arithmetic, branches, thumb_interwork]
+    limitations: [mve_neon_partial]
+  - name: ISA-RISCV32
+    supported_targets: [riscv32-linux-gnu]
+    architecture: RISC-V 32
+    dataset: third_party/isa/riscv32.isa
+    relocation_model: [static, pic]
+    object_formats: [elf32]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble, elf_link]
+    supported_features: [rv32gc, integer_arithmetic, branches]
+    limitations: [privileged_forms_minimal]
+  - name: ISA-MIPS32
+    supported_targets: [mips-linux-gnu]
+    architecture: MIPS32r2
+    dataset: third_party/isa/mips32.isa
+    relocation_model: [static, pic]
+    object_formats: [elf32]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble, elf_link]
+    supported_features: [integer_arithmetic, branches]
+    limitations: [bal_omitted_dual_field_encoding]
+  - name: ISA-MIPS64
+    supported_targets: [mips64-linux-gnu]
+    architecture: MIPS64r2
+    dataset: third_party/isa/mips64.isa
+    relocation_model: [static, pic]
+    object_formats: [elf64]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble, elf_link]
+    supported_features: [integer_arithmetic, branches]
+    limitations: [bal_omitted_dual_field_encoding]
+  - name: ISA-PPC32
+    supported_targets: [powerpc-linux-gnu]
+    architecture: PowerPC 32
+    dataset: third_party/isa/ppc32.isa
+    relocation_model: [static, pic]
+    object_formats: [elf32]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble, elf_link]
+    supported_features: [integer_arithmetic, branches]
+    limitations: [altivec_partial]
+  - name: ISA-PPC64
+    supported_targets: [powerpc64-linux-gnu, powerpc64le-linux-gnu]
+    architecture: PowerPC 64
+    dataset: third_party/isa/ppc64.isa
+    relocation_model: [static, pic]
+    object_formats: [elf64]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble, elf_link]
+    supported_features: [integer_arithmetic, branches, vsx_subset]
+    limitations: [htm_omitted]
+  - name: ISA-S390X
+    supported_targets: [s390x-linux-gnu]
+    architecture: IBM z/Architecture
+    dataset: third_party/isa/s390x.isa
+    relocation_model: [static, pic]
+    object_formats: [elf64]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble, elf_link]
+    supported_features: [integer_arithmetic, branches]
+    limitations: [vector_facility_partial]
+  - name: ISA-SPARC64
+    supported_targets: [sparc64-linux-gnu]
+    architecture: SPARC64
+    dataset: third_party/isa/sparc64.isa
+    relocation_model: [static, pic]
+    object_formats: [elf64]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble, elf_link]
+    supported_features: [integer_arithmetic, windowed_abi, branches]
+    limitations: [vis_partial]
+  - name: ISA-LoongArch64
+    supported_targets: [loongarch64-linux-gnu]
+    architecture: LoongArch 64
+    dataset: third_party/isa/loongarch64.isa
+    relocation_model: [static, pic]
+    object_formats: [elf64]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, elf_link]
+    supported_features: [integer_arithmetic, branches, lsx_subset]
+    limitations: [lasx_partial, no_keystone_arch]
+  - name: ISA-LoongArch32
+    supported_targets: [loongarch32-linux-gnu]
+    architecture: LoongArch 32
+    dataset: third_party/isa/loongarch32.isa
+    relocation_model: [static, pic]
+    object_formats: [elf32]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, elf_link]
+    supported_features: [integer_arithmetic, branches]
+    limitations: [fpu_subset, no_keystone_arch]
+  - name: ISA-M68K
+    supported_targets: [m68k-linux-gnu]
+    architecture: Motorola 68000
+    dataset: third_party/isa/m68k.isa
+    relocation_model: [static]
+    object_formats: [elf32]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, elf_link]
+    supported_features: [integer_arithmetic, branches]
+    limitations: [fpu_mmu_partial, no_keystone_arch]
+  - name: ISA-AVR
+    supported_targets: [avr-unknown-elf]
+    architecture: AVR 8-bit
+    dataset: third_party/isa/avr.isa
+    relocation_model: [static]
+    object_formats: [elf32-avr]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, elf_link]
+    supported_features: [integer_arithmetic, register_pairs]
+    limitations: [xmega_spm_partial, no_keystone_arch]
+  - name: ISA-Hexagon
+    supported_targets: [hexagon-unknown-elf]
+    architecture: Hexagon V60
+    dataset: third_party/isa/hexagon.isa
+    relocation_model: [static]
+    object_formats: [elf32-hexagon]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble, elf_link]
+    supported_features: [single_instruction_packets]
+    limitations: [multi_packet_bundles_not_encoded]
+  - name: ISA-BPF
+    supported_targets: [bpf-unknown-none]
+    architecture: eBPF
+    dataset: third_party/isa/bpf.isa
+    relocation_model: [co-re]
+    object_formats: [bpf]
+    executable_formats: [bpf_program]
+    code_generation_stages: [isa_parse, instruction_selection, emission, keystone_assemble]
+    supported_features: [alu, jmp, mem, xadd]
+    limitations: [kfunc_set_minimal]
+  - name: ISA-AMDGPU
+    supported_targets: [amdgcn-amd-amdhsa]
+    architecture: GCN gfx900
+    dataset: third_party/isa/amdgpu.isa
+    relocation_model: [relocatable]
+    object_formats: [elf64-amdgpu]
+    executable_formats: [hsaco]
+    code_generation_stages: [isa_parse, instruction_selection, emission]
+    supported_features: [gcn_gfx900_subset]
+    limitations: [sdwa_dpp_modifiers_partial, no_keystone_arch]
+  - name: ISA-NVPTX
+    supported_targets: [nvptx64-nvidia-cuda]
+    architecture: PTX virtual ISA
+    dataset: third_party/isa/nvptx.isa
+    relocation_model: [none]
+    object_formats: [ptx_text]
+    executable_formats: [cubin_via_ptxas]
+    code_generation_stages: [isa_parse, instruction_selection, text_emission]
+    supported_features: [integer_ops, branches, predicates]
+    limitations: [text_only_no_binary_opcode]
+  - name: ISA-SPIRV
+    supported_targets: [spirv-unknown-vulkan]
+    architecture: SPIR-V
+    dataset: third_party/isa/spirv.isa
+    relocation_model: [logical]
+    object_formats: [spv_binary]
+    executable_formats: [spv_module]
+    code_generation_stages: [isa_parse, instruction_selection, emission]
+    supported_features: [core_arithmetic, structured_control]
+    limitations: [module_header_built_separately]
+  - name: ISA-TriCore
+    supported_targets: [tricore-unknown-elf]
+    architecture: TriCore
+    dataset: third_party/isa/tricore.isa
+    relocation_model: [static]
+    object_formats: [elf32-tricore]
+    executable_formats: [elf]
+    code_generation_stages: [isa_parse, instruction_selection, text_emission]
+    supported_features: [d_a_registers, csa]
+    limitations: [text_only_pcp_forms]
