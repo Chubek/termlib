@@ -3,13 +3,12 @@
  * Implements termscript/termscript.h: the embedding API (TS_VM lifecycle,
  * run/compile) and the native extension ABI (TS_Module tables).  Only
  * standard C headers plus termscript.h are included; linking requires
- * libc and pthreads only.
+ * libc, pthreads, and the vendored NovoParse runtime.
  *
- * Formal grammar: termscript/Termscript.g, compiled to a parser with
- * scripts/aurocks.pl and built alongside this file.  The generated
- * parser builds the ts_node_t AST below through the ts_* constructors;
- * the tree-walking evaluator and the C transpiler then operate on that
- * tree.
+ * Formal grammar: termscript/Termscript.ng, compiled by NovoParse into a
+ * parser descriptor.  termscript/ts_parser_ng.c adapts the NovoParse syntax
+ * tree into the ts_node_t AST below through the ts_* constructors; the
+ * tree-walking evaluator and AOT backends then operate on that tree.
  *
  * Core language subset:
  *   program  := stmt*
@@ -42,6 +41,14 @@
 
 #define TS_MAX_STEPS (1u << 20)
 #define TS_MAX_FILE (1u << 20)
+
+#if defined(TERMSCRIPT_HAVE_JITERATI)
+int ts_jiterati_available (void);
+int ts_jiterati_binary_i32 (int opcode, int32_t lhs, int32_t rhs,
+                            int32_t *out, char *error, size_t error_size);
+int ts_jiterati_add_i32 (int32_t lhs, int32_t rhs, int32_t *out,
+                         char *error, size_t error_size);
+#endif
 
 /* ---------------- status and errors ---------------- */
 
@@ -95,6 +102,48 @@ ts_error_clear (TS_Error *error)
   error->system_errno = 0;
   error->offset = 0;
   error->message[0] = '\0';
+}
+
+void
+ts_compile_options_init (TS_CompileOptions *options)
+{
+  if (!options)
+    return;
+  memset (options, 0, sizeof *options);
+  options->struct_size = sizeof *options;
+  options->version = TS_COMPILE_OPTIONS_VERSION;
+  options->backend = TS_BACKEND_C;
+}
+
+const char *
+ts_backend_name (TS_Backend backend)
+{
+  switch (backend)
+    {
+    case TS_BACKEND_C: return "c";
+    case TS_BACKEND_QBE: return "qbe";
+    case TS_BACKEND_JITERATI: return "jiterati";
+    default: return "unknown";
+    }
+}
+
+bool
+ts_backend_available (TS_Backend backend)
+{
+  switch (backend)
+    {
+    case TS_BACKEND_C:
+    case TS_BACKEND_QBE:
+      return true;
+    case TS_BACKEND_JITERATI:
+#if defined(TERMSCRIPT_HAVE_JITERATI)
+      return ts_jiterati_available () != 0;
+#else
+      return false;
+#endif
+    default:
+      return false;
+    }
 }
 
 /* ---------------- value handles ---------------- */
@@ -1006,12 +1055,12 @@ ts_node_new (node_kind_t kind, unsigned line)
   return n;
 }
 
-/* ---------------- aurocks front end ---------------- */
+/* ---------------- NovoParse front end ---------------- */
 /*
- * Termscript is parsed by the aurocks-generated parser compiled from
- * termscript/Termscript.g (see "perl scripts/aurocks.pl Termscript.g").
- * The actions in the grammar call the ts_* constructors below, which
- * build the same ts_node_t AST the evaluator walks.  Ownership rules:
+ * Termscript is parsed by the NovoParse descriptor generated from
+ * termscript/Termscript.ng.  The adapter in ts_parser_ng.c walks the syntax
+ * tree and calls the ts_* constructors below, which build the same ts_node_t
+ * AST the evaluator walks.  Ownership rules:
  *
  * - Every ts_* helper either adopts each `char *` it is given or frees
  *   it before returning; callers never touch adopted/freed buffers.
@@ -1028,12 +1077,14 @@ ts_node_new (node_kind_t kind, unsigned line)
  *   rewound over trailing layout before counting newlines, so lines are
  *   exact unless trailing `#` comment lines intervene (documented
  *   approximation, off by the comment count).
- * - Parse calls are serialized by ts_parse_mutex because the generated
- *   entry takes no user data; the per-parse input window lives in
- *   ts_pctx.  Evaluation itself stays per-VM and lock-free.
+ * - Parse calls are serialized by ts_parse_mutex because the per-parse input
+ *   window and allocation-failure flag live in ts_pctx.  Evaluation itself
+ *   stays per-VM and lock-free.
  */
 
-void *ts_gram_parse (const char *input); /* generated parser */
+void *ts_ng_parse (const char *input); /* ts_parser_ng.c */
+size_t ts_ng_error_offset (void);
+const char *ts_ng_error_message (void);
 
 /* ts_mk_string/ts_mk_number are defined below. */
 void *ts_mk_string (char *tok, unsigned line);
@@ -1746,7 +1797,7 @@ ts_try_parse (const char *input, bool *oom)
   ts_pctx.start = input;
   ts_pctx.end = input + strlen (input);
   ts_pctx.oom = false;
-  r = ts_gram_parse (input);
+  r = ts_ng_parse (input);
   if (ts_pctx.oom) r = NULL;
   if (r) ts_parse_keep_tree (r);
   ts_parse_memory = NULL;
@@ -1769,57 +1820,6 @@ ts_try_parse (const char *input, bool *oom)
   return r;
 }
 
-/* Best-effort syntax-error offset: longest complete-parse prefix ending
- * after a newline or semicolon.  Any complete prefix proves the error is
- * at or after its end.  Bounded (count and input size) to stay cheap. */
-static size_t
-ts_error_offset (const char *source)
-{
-  size_t len = strlen (source);
-  size_t *cands = NULL;
-  size_t ncands = 0, cap = 0;
-  size_t i, best = 0;
-  bool oom = false;
-  void *r;
-  if (len > 65536)
-    return 0;
-  for (i = 0; i < len && ncands < 2000; i++)
-    if (source[i] == '\n' || source[i] == ';')
-      {
-        if (ncands == cap)
-          {
-            size_t ncap = cap ? cap * 2 : 64;
-            size_t *nv = realloc (cands, ncap * sizeof *nv);
-            if (!nv)
-              break;
-            cands = nv;
-            cap = ncap;
-          }
-        cands[ncands++] = i + 1;
-      }
-  for (i = ncands; i > 0; i--)
-    {
-      size_t off = cands[i - 1];
-      char *prefix = malloc (off + 1);
-      if (!prefix)
-        break;
-      memcpy (prefix, source, off);
-      prefix[off] = '\0';
-      r = ts_try_parse (prefix, &oom);
-      free (prefix);
-      if (oom)
-        break;
-      if (r)
-        {
-          ts_node_free ((ts_node_t *) r);
-          best = off;
-          break;
-        }
-    }
-  free (cands);
-  return best;
-}
-
 static TS_Status
 ts_parse_program (const char *source, ts_node_t **out, TS_Error *error)
 {
@@ -1836,8 +1836,8 @@ ts_parse_program (const char *source, ts_node_t **out, TS_Error *error)
       return TS_ERR_NOMEM;
     }
   *out = NULL;
-  ts_error_set (error, TS_ERR_PARSE, 0, ts_error_offset (source),
-              "termscript syntax error");
+  ts_error_set (error, TS_ERR_PARSE, 0, ts_ng_error_offset (),
+                "%s", ts_ng_error_message ());
   return TS_ERR_PARSE;
 }
 #undef malloc
@@ -2457,6 +2457,409 @@ ts_vm_run_file (TS_VM *vm, const char *path, char **output,
   st = ts_vm_run_string (vm, buf, output, error);
   free (buf);
   return st;
+}
+
+enum
+{
+  TS_JIT_ADD = 0,
+  TS_JIT_SUB,
+  TS_JIT_MUL,
+  TS_JIT_DIV,
+  TS_JIT_MOD,
+  TS_JIT_EQ,
+  TS_JIT_LT,
+  TS_JIT_GT,
+  TS_JIT_LE,
+  TS_JIT_GE
+};
+
+#if defined(TERMSCRIPT_HAVE_JITERATI)
+static TS_Status
+ts_jit_i32_arg (TS_VM *vm, const ts_arg_t *arg, int32_t *out,
+                TS_Error *error)
+{
+  int64_t value;
+  if (!arg || !out)
+    {
+      ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad Jiterati argument");
+      return TS_ERR_INVAL;
+    }
+  if (arg->tag == 1)
+    value = arg->number;
+  else if (arg->tag == 0)
+    {
+      ts_var_t *var = vm_lookup (vm, arg->name);
+      if (!var)
+        {
+          ts_error_set (error, TS_ERR_NOTFOUND, 0, 0,
+                        "unbound variable '%s'", arg->name);
+          return TS_ERR_NOTFOUND;
+        }
+      if (var->value.type != TS_INT)
+        {
+          ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                        "Jiterati G:add currently accepts only int values");
+          return TS_ERR_UNSUPPORTED;
+        }
+      value = var->value.as.integer;
+    }
+  else
+    {
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                    "Jiterati G:add currently accepts only int values");
+      return TS_ERR_UNSUPPORTED;
+    }
+  if (value < INT32_MIN || value > INT32_MAX)
+    {
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                    "Jiterati G:add currently supports only i32 operands");
+      return TS_ERR_UNSUPPORTED;
+    }
+  *out = (int32_t) value;
+  return TS_OK;
+}
+
+static int
+ts_jit_g_opcode (const char *func, bool *is_bool)
+{
+  if (is_bool)
+    *is_bool = false;
+  if (!func)
+    return -1;
+  if (strcmp (func, "add") == 0) return TS_JIT_ADD;
+  if (strcmp (func, "sub") == 0) return TS_JIT_SUB;
+  if (strcmp (func, "mul") == 0) return TS_JIT_MUL;
+  if (strcmp (func, "div") == 0) return TS_JIT_DIV;
+  if (strcmp (func, "mod") == 0) return TS_JIT_MOD;
+  if (is_bool)
+    *is_bool = true;
+  if (strcmp (func, "eq") == 0) return TS_JIT_EQ;
+  if (strcmp (func, "lt") == 0) return TS_JIT_LT;
+  if (strcmp (func, "gt") == 0) return TS_JIT_GT;
+  if (strcmp (func, "le") == 0) return TS_JIT_LE;
+  if (strcmp (func, "ge") == 0) return TS_JIT_GE;
+  if (is_bool)
+    *is_bool = false;
+  return -1;
+}
+
+static TS_Status
+ts_jit_checked_i32_binary (int opcode, int32_t lhs, int32_t rhs,
+                           unsigned line, int32_t *out, TS_Error *error)
+{
+  int64_t r = 0;
+  switch (opcode)
+    {
+    case TS_JIT_ADD:
+      r = (int64_t) lhs + (int64_t) rhs;
+      break;
+    case TS_JIT_SUB:
+      r = (int64_t) lhs - (int64_t) rhs;
+      break;
+    case TS_JIT_MUL:
+      r = (int64_t) lhs * (int64_t) rhs;
+      break;
+    case TS_JIT_DIV:
+      if (rhs == 0)
+        { ts_error_set (error, TS_ERR_PARSE, 0, line, "division by zero"); return TS_ERR_PARSE; }
+      if (lhs == INT32_MIN && rhs == -1)
+        { ts_error_set (error, TS_ERR_PARSE, 0, line, "integer overflow"); return TS_ERR_PARSE; }
+      r = lhs / rhs;
+      break;
+    case TS_JIT_MOD:
+      if (rhs == 0)
+        { ts_error_set (error, TS_ERR_PARSE, 0, line, "modulo by zero"); return TS_ERR_PARSE; }
+      r = lhs == INT32_MIN && rhs == -1 ? 0 : lhs % rhs;
+      break;
+    case TS_JIT_EQ: r = lhs == rhs; break;
+    case TS_JIT_LT: r = lhs < rhs; break;
+    case TS_JIT_GT: r = lhs > rhs; break;
+    case TS_JIT_LE: r = lhs <= rhs; break;
+    case TS_JIT_GE: r = lhs >= rhs; break;
+    default:
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, line,
+                    "unknown Jiterati i32 opcode");
+      return TS_ERR_UNSUPPORTED;
+    }
+  if (r < INT32_MIN || r > INT32_MAX)
+    {
+      ts_error_set (error, TS_ERR_PARSE, 0, line, "integer overflow");
+      return TS_ERR_PARSE;
+    }
+  *out = (int32_t) r;
+  return TS_OK;
+}
+#endif
+
+static TS_Status
+ts_jit_eval_simple (TS_VM *vm, ts_node_t *n, TS_Value *out,
+                    TS_Error *error)
+{
+  if (!n || !out)
+    {
+      ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad Jiterati expression");
+      return TS_ERR_INVAL;
+    }
+  switch (n->kind)
+    {
+    case N_VAR:
+      {
+        ts_var_t *var = vm_lookup (vm, n->name);
+        if (!var)
+          {
+            ts_error_set (error, TS_ERR_NOTFOUND, 0, n->line,
+                          "unbound variable '%s'", n->name);
+            return TS_ERR_NOTFOUND;
+          }
+        if (ts_value_copy (out, &var->value) != TS_OK)
+          {
+            ts_error_set (error, TS_ERR_NOMEM, ENOMEM, 0, "out of memory");
+            return TS_ERR_NOMEM;
+          }
+        return TS_OK;
+      }
+    case N_LIT_INT:
+      out->type = TS_INT;
+      out->as.integer = n->number;
+      return TS_OK;
+    case N_LIT_STR:
+      out->type = TS_STRING;
+      out->as.string = strdup (n->string);
+      if (!out->as.string)
+        {
+          ts_error_set (error, TS_ERR_NOMEM, ENOMEM, 0, "out of memory");
+          return TS_ERR_NOMEM;
+        }
+      return TS_OK;
+    case N_LIT_BOOL:
+      out->type = TS_BOOL;
+      out->as.boolean = n->boolean;
+      return TS_OK;
+    case N_LIT_NIL:
+      out->type = TS_NIL;
+      return TS_OK;
+    default:
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, n->line,
+                    "Jiterati backend supports only simple values and G:add");
+      return TS_ERR_UNSUPPORTED;
+    }
+}
+
+static TS_Status
+ts_jit_eval_expr (TS_VM *vm, ts_node_t *n, TS_Value *out, TS_Error *error)
+{
+  if (n && n->kind == N_OR)
+    {
+      TS_Value lhs;
+      TS_Status st;
+      lhs.type = TS_NIL;
+      st = ts_jit_eval_expr (vm, n->lhs, &lhs, error);
+      if (st != TS_OK)
+        return st;
+      if (ts_value_truthy (&lhs))
+        {
+          *out = lhs;
+          return TS_OK;
+        }
+      ts_value_release (&lhs);
+      return ts_jit_eval_expr (vm, n->rhs, out, error);
+    }
+  if (n && n->kind == N_CALL)
+    {
+#if defined(TERMSCRIPT_HAVE_JITERATI)
+      int opcode;
+      bool result_bool = false;
+      int32_t lhs, rhs, checked, result;
+      char detail[160];
+      TS_Status st;
+      opcode = strcmp (n->module, "G") == 0 ? ts_jit_g_opcode (n->func, &result_bool) : -1;
+      if (opcode < 0)
+        return eval_call (vm, n, out, error);
+      if (n->nargs != 2)
+        {
+          ts_error_set (error, TS_ERR_INVAL, 0, n->line,
+                        "want 2 args, got %zu", n->nargs);
+          return TS_ERR_INVAL;
+        }
+      st = ts_jit_i32_arg (vm, &n->args[0], &lhs, error);
+      if (st != TS_OK)
+        return st;
+      st = ts_jit_i32_arg (vm, &n->args[1], &rhs, error);
+      if (st != TS_OK)
+        return st;
+      st = ts_jit_checked_i32_binary (opcode, lhs, rhs, n->line, &checked,
+                                      error);
+      if (st != TS_OK)
+        return st;
+      detail[0] = '\0';
+      if (ts_jiterati_binary_i32 (opcode, lhs, rhs, &result, detail,
+                                  sizeof detail) != 0)
+        {
+          ts_error_set (error, TS_ERR_UNSUPPORTED, 0, n->line,
+                        "Jiterati execution failed: %s",
+                        detail[0] ? detail : "unknown error");
+          return TS_ERR_UNSUPPORTED;
+        }
+      if (result != checked)
+        {
+          ts_error_set (error, TS_ERR_SYSTEM, 0, n->line,
+                        "Jiterati result mismatch");
+          return TS_ERR_SYSTEM;
+        }
+      if (result_bool)
+        {
+          out->type = TS_BOOL;
+          out->as.boolean = result != 0;
+        }
+      else
+        {
+          out->type = TS_INT;
+          out->as.integer = result;
+        }
+      return TS_OK;
+#else
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, n->line,
+                    "Jiterati backend was not built");
+      return TS_ERR_UNSUPPORTED;
+#endif
+    }
+  return ts_jit_eval_simple (vm, n, out, error);
+}
+
+static TS_Status
+ts_jit_exec_list (TS_VM *vm, ts_node_t *list, TS_Error *error)
+{
+  ts_node_t *s;
+  for (s = list; s; s = s->next)
+    {
+      TS_Status st;
+      if (vm_step_budget (vm, error) != TS_OK)
+        return TS_ERR_LIMIT;
+      switch (s->kind)
+        {
+        case N_CONST:
+        case N_ASSIGN:
+          {
+            TS_Value v;
+            v.type = TS_NIL;
+            st = ts_jit_eval_expr (vm, s->rhs, &v, error);
+            if (st != TS_OK)
+              return st;
+            st = vm_define (vm, s->name, &v, s->kind == N_CONST,
+                            s->line, error);
+            ts_value_release (&v);
+            if (st != TS_OK)
+              return st;
+          }
+          break;
+        case N_EXPR_STMT:
+            {
+              TS_Value v;
+              v.type = TS_NIL;
+              st = ts_jit_eval_expr (vm, s->rhs, &v, error);
+              ts_value_release (&v);
+              if (st != TS_OK)
+                return st;
+            }
+          break;
+        case N_WHILE:
+          for (;;)
+            {
+              TS_Value c;
+              bool go;
+              c.type = TS_NIL;
+              st = ts_jit_eval_expr (vm, s->cond, &c, error);
+              if (st != TS_OK)
+                return st;
+              go = ts_value_truthy (&c);
+              ts_value_release (&c);
+              if (!go)
+                break;
+              st = ts_jit_exec_list (vm, s->first, error);
+              if (st != TS_OK)
+                return st;
+            }
+          break;
+        case N_IF:
+          {
+            TS_Value c;
+            bool go;
+            c.type = TS_NIL;
+            st = ts_jit_eval_expr (vm, s->cond, &c, error);
+            if (st != TS_OK)
+              return st;
+            go = ts_value_truthy (&c);
+            ts_value_release (&c);
+            st = ts_jit_exec_list (vm, go ? s->first : s->otherwise, error);
+            if (st != TS_OK)
+              return st;
+          }
+          break;
+        default:
+          ts_error_set (error, TS_ERR_UNSUPPORTED, 0, s->line,
+                        "Jiterati backend does not support this statement");
+          return TS_ERR_UNSUPPORTED;
+        }
+    }
+  return TS_OK;
+}
+
+static TS_Status
+ts_vm_run_jiterati (TS_VM *vm, const char *source, char **output,
+                   TS_Error *error)
+{
+  ts_node_t *prog = NULL;
+  TS_Status st;
+  if (!vm || !source)
+    {
+      ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad arguments");
+      return TS_ERR_INVAL;
+    }
+  if (!ts_backend_available (TS_BACKEND_JITERATI))
+    {
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                    "Jiterati backend is unavailable in this build");
+      return TS_ERR_UNSUPPORTED;
+    }
+  st = ts_parse_program (source, &prog, error);
+  if (st != TS_OK)
+    return st;
+  vm_reset_run (vm);
+  st = ts_jit_exec_list (vm, prog->first, error);
+  ts_node_free (prog);
+  if (st != TS_OK)
+    return st;
+  if (output)
+    {
+      *output = strdup (vm->output ? vm->output : "");
+      if (!*output)
+        {
+          ts_error_set (error, TS_ERR_NOMEM, ENOMEM, 0, "out of memory");
+          return TS_ERR_NOMEM;
+        }
+    }
+  return TS_OK;
+}
+
+TS_Status
+ts_vm_run_backend (TS_VM *vm, const char *source, TS_Backend backend,
+                   char **output, TS_Error *error)
+{
+  switch (backend)
+    {
+    case TS_BACKEND_JITERATI:
+      return ts_vm_run_jiterati (vm, source, output, error);
+    case TS_BACKEND_C:
+    case TS_BACKEND_QBE:
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                    "backend '%s' is a text/AOT backend; use ts_vm_compile_backend",
+                    ts_backend_name (backend));
+      return TS_ERR_UNSUPPORTED;
+    default:
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                    "unknown Termscript backend: %d", (int) backend);
+      return TS_ERR_UNSUPPORTED;
+    }
 }
 
 TS_Status
@@ -3340,8 +3743,8 @@ ts_cg_emit (TS_VM *vm, ts_node_t *prog, const char *unit_name, bool dt_mode,
                " * libraries (`.tsc` companions) were inlined at compile time.\n"
                " * Native modules (std.*, custom) link statically and resolve\n"
                " * through the VM registry at run time.\n"
-               " * Compile: cc -o UNIT UNIT.c -ltermscript -ltermscript_standalone -ltermlib\n"
-               " * Static:  cc -static -o UNIT UNIT.c -ltermscript -ltermscript_standalone -ltermlib\n"
+                " * Compile: cc -o UNIT UNIT.c -ltermscript -ltermscript_standalone -lnovoparse -ltermlib\n"
+                " * Static:  cc -static -o UNIT UNIT.c -ltermscript -ltermscript_standalone -lnovoparse -ltermlib\n"
                " */\n"
                "#include <stdio.h>\n"
                "#include <stdlib.h>\n"
@@ -3359,10 +3762,10 @@ ts_cg_emit (TS_VM *vm, ts_node_t *prog, const char *unit_name, bool dt_mode,
                " * Native modules link statically and resolve through the VM\n"
                " * registry at run time: weak references call\n"
                " * ts_stdlib_register_all/search_path when linked in, so\n"
-               " * G-only units link libtermscript_standalone alone while\n"
-               " * std.* users add the stdlib (force archive extraction with\n"
+                " * G-only units link libtermscript_standalone + libnovoparse\n"
+                " * while std.* users add the stdlib (force archive extraction with\n"
                " * -u, since weak references alone do not pull it in):\n"
-               " * Compile: cc -o UNIT UNIT.c -ltermscript_standalone -lpthread\n"
+                " * Compile: cc -o UNIT UNIT.c -ltermscript_standalone -lnovoparse -lpthread\n"
                " *   (+ -u ts_stdlib_register_all -u ts_stdlib_search_path\n"
                " *      -ltermscript_stdlib for std.* native modules)\n"
                " * Static:  cc -static -o UNIT UNIT.c ... (same libraries)\n"
@@ -3473,6 +3876,59 @@ ts_vm_compile_to_c (TS_VM *vm, const char *source,
 }
 
 #include "ts_qbe.inc"
+
+const char *
+ts_vm_compile_backend (TS_VM *vm, const char *source,
+                       const TS_CompileOptions *options, TS_Error *error)
+{
+  TS_CompileOptions defaults;
+  const TS_CompileOptions *opts = options;
+  if (!opts)
+    {
+      ts_compile_options_init (&defaults);
+      opts = &defaults;
+    }
+  if (!vm || !source)
+    {
+      ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad arguments");
+      return NULL;
+    }
+  if (opts->struct_size < offsetof (TS_CompileOptions, reserved) ||
+      opts->version != TS_COMPILE_OPTIONS_VERSION)
+    {
+      ts_error_set (error, TS_ERR_INVAL, 0, 0,
+                    "unsupported compile options version");
+      return NULL;
+    }
+  if (opts->flags != 0)
+    {
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                    "unsupported compile flags: 0x%x", opts->flags);
+      return NULL;
+    }
+  for (size_t i = 0; i < sizeof opts->reserved / sizeof opts->reserved[0]; i++)
+    if (opts->reserved[i] != 0)
+      {
+        ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                      "unsupported compile option reserved field %zu", i);
+        return NULL;
+      }
+  switch (opts->backend)
+    {
+    case TS_BACKEND_C:
+      return ts_vm_compile_to_c (vm, source, opts->unit_name, error);
+    case TS_BACKEND_QBE:
+      return ts_vm_compile_to_qbe (vm, source, false, error);
+    case TS_BACKEND_JITERATI:
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                    "Jiterati is an execution/JIT backend; use ts_vm_run_backend");
+      return NULL;
+    default:
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                    "unknown Termscript backend: %d", (int) opts->backend);
+      return NULL;
+    }
+}
 
 /* Termlib-flavored compile on a standalone VM (shared emitter).  Used
  * by dt_termscript_compile_to_c via the inner TS VM. */

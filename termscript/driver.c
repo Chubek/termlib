@@ -18,6 +18,7 @@
  * - --backend qbe: lower directly to QBE IL, run the bundled QBE,
  *   assemble with Keystone, and link a native executable. With -c,
  *   emit QBE IL instead. Requires -o or -c.
+ * - --backend jiterati: execute the experimental Jiterati JIT subset.
  *
  * `-` reads the script from stdin.  Transpiled C needs libtermscript at
  * link time; use an installed tree or set LIBRARY_PATH accordingly.
@@ -34,7 +35,7 @@
 #include "termscript_driver_config.h"
 
 #define TS_DRIVER_MAX_STDIN (1u << 20)
-static bool qbe_backend;
+static DT_TermscriptBackend selected_backend = DT_TERMSCRIPT_BACKEND_C;
 #ifdef TS_HAVE_NATIVE
 int ts_native_assemble (const char *, const char *);
 #endif
@@ -42,7 +43,7 @@ int ts_native_assemble (const char *, const char *);
 static void
 usage (FILE *f)
 {
-  fputs ("usage: termscript [--help] [--backend c|qbe] [-c] [-o OUT] [--static] [--cc CC] script.ts\n"
+  fputs ("usage: termscript [--help] [--backend c|qbe|jiterati] [-c] [-o OUT] [--static] [--cc CC] script.ts\n"
          "  -c emits C or QBE IL; -o links an executable. Default: run the VM.\n", f);
 }
 
@@ -126,6 +127,8 @@ run_vm (const char *source, bool from_stdin)
   DT_TermVM *vm;
   DT_Error err;
   char *output = NULL;
+  char *input = NULL;
+  const char *run_source = source;
   DT_Status st;
   dt_error_clear (&err);
   vm = dt_termscript_create (&err);
@@ -134,18 +137,39 @@ run_vm (const char *source, bool from_stdin)
       fprintf (stderr, "termscript: %s\n", err.message);
       return 1;
     }
-  if (from_stdin)
-    st = dt_termscript_run_string (vm, source, &output, &err);
+  if (from_stdin || selected_backend == DT_TERMSCRIPT_BACKEND_JITERATI)
+    {
+      input = from_stdin ? read_stdin_all () : read_file_all (source);
+      if (!input)
+        {
+          if (from_stdin)
+            fprintf (stderr, "termscript: cannot read stdin\n");
+          else
+            fprintf (stderr, "termscript: cannot open '%s': %s\n", source,
+                     strerror (errno));
+          dt_termscript_free (vm);
+          return 1;
+        }
+      run_source = input;
+    }
+  if (selected_backend == DT_TERMSCRIPT_BACKEND_JITERATI)
+    st = dt_termscript_run_backend (vm, run_source,
+                                    DT_TERMSCRIPT_BACKEND_JITERATI,
+                                    &output, &err);
+  else if (from_stdin)
+    st = dt_termscript_run_string (vm, run_source, &output, &err);
   else
     st = dt_termscript_run_file (vm, source, &output, &err);
   if (st != DT_OK)
     {
       fprintf (stderr, "termscript: %s\n", err.message);
+      free (input);
       dt_termscript_free (vm);
       return 1;
     }
   fputs (output ? output : "", stdout);
   free (output);
+  free (input);
   dt_termscript_free (vm);
   return 0;
 }
@@ -205,8 +229,9 @@ emit_c (const char *source, bool from_stdin, const char *out_path)
     unit[i] = '\0';
     if (!unit[0])
       strcpy (unit, "termscript_unit");
-    code = qbe_backend ? dt_termscript_compile_to_qbe (vm, file_text, &err)
-                       : dt_termscript_compile_to_c (vm, file_text, unit, &err);
+    code = selected_backend == DT_TERMSCRIPT_BACKEND_QBE
+             ? dt_termscript_compile_to_qbe (vm, file_text, &err)
+             : dt_termscript_compile_to_c (vm, file_text, unit, &err);
   }
   free (file_text);
   if (!code)
@@ -306,7 +331,7 @@ build_exe (const char *source, bool from_stdin, const char *out_path,
   if (!tmpdir || !*tmpdir) tmpdir = "/tmp";
   if (asprintf (&tmp, "%s/termscriptXXXXXX.c", tmpdir) < 0) return 1;
 #ifdef TS_HAVE_NATIVE
-  if (qbe_backend)
+  if (selected_backend == DT_TERMSCRIPT_BACKEND_QBE)
     {
       if (asprintf (&native_dir, "%s/termscript-native-XXXXXX", tmpdir) < 0)
         { free (tmp); return 1; }
@@ -448,9 +473,16 @@ main (int argc, char **argv)
         }
       else if (strcmp (argv[i], "--backend") == 0)
         {
-          if (++i >= argc || (strcmp (argv[i], "c") && strcmp (argv[i], "qbe")))
+          if (++i >= argc || (strcmp (argv[i], "c") &&
+                              strcmp (argv[i], "qbe") &&
+                              strcmp (argv[i], "jiterati")))
             { usage (stderr); return 2; }
-          qbe_backend = !strcmp (argv[i], "qbe");
+          if (strcmp (argv[i], "qbe") == 0)
+            selected_backend = DT_TERMSCRIPT_BACKEND_QBE;
+          else if (strcmp (argv[i], "jiterati") == 0)
+            selected_backend = DT_TERMSCRIPT_BACKEND_JITERATI;
+          else
+            selected_backend = DT_TERMSCRIPT_BACKEND_C;
         }
       else if (strcmp (argv[i], "-c") == 0)
         emit_only = true;
@@ -499,10 +531,14 @@ main (int argc, char **argv)
     }
   {
     bool from_stdin = strcmp (script, "-") == 0;
-    if (qbe_backend && !emit_only && !out_path)
+    if (selected_backend == DT_TERMSCRIPT_BACKEND_JITERATI && emit_only)
+      { fprintf (stderr, "termscript: --backend jiterati does not emit text\n"); return 2; }
+    if (selected_backend == DT_TERMSCRIPT_BACKEND_JITERATI && out_path)
+      { fprintf (stderr, "termscript: --backend jiterati is an execution backend, not an AOT linker\n"); return 2; }
+    if (selected_backend == DT_TERMSCRIPT_BACKEND_QBE && !emit_only && !out_path)
       { fprintf (stderr, "termscript: --backend qbe requires -c or -o\n"); return 2; }
 #ifndef TS_HAVE_NATIVE
-    if (qbe_backend && !emit_only)
+    if (selected_backend == DT_TERMSCRIPT_BACKEND_QBE && !emit_only)
       { fprintf (stderr, "termscript: native backend was disabled at build time\n"); return 2; }
 #endif
     if (emit_only)

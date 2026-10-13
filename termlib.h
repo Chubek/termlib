@@ -694,10 +694,11 @@ DT_Status dt_remoteconn_ping (DT_RemoteConn *connection, uint64_t message_id,
 
 /* Termscript is a small Turing-complete scripting language exposing all
    Termlib features (PTY/TTY control, terminfo lookup/expansion,
-   recording, connections).  Grammar: termscript/Termscript.g (compiled
-   with scripts/aurocks.pl).  Two backends: the tree-walking VM below
-   and ahead-of-time compilation to C (dt_termscript_compile_to_c);
-   generated C holds compiled statements over the dt_rt_* runtime
+   recording, connections).  Grammar: termscript/Termscript.ng (compiled
+   with vendored NovoParse).  Execution uses the tree-walking VM below;
+   text backends currently emit C and QBE IL.  Jiterati is an experimental
+   execution/JIT backend for a narrow checked subset; it does not emit text.
+   Generated C holds compiled statements over the dt_rt_* runtime
    (inlined Termscript-side imports, statically linked native modules)
    and must be linked against libtermscript plus libtermscript_stdlib
    (the driver does this unless -c is passed; --static links
@@ -730,6 +731,26 @@ struct DT_TermValue
 
 typedef struct DT_TermVM DT_TermVM;
 
+#define DT_TERMSCRIPT_COMPILE_OPTIONS_VERSION 1u
+
+typedef enum
+{
+  DT_TERMSCRIPT_BACKEND_C = 0,
+  DT_TERMSCRIPT_BACKEND_QBE = 1,
+  DT_TERMSCRIPT_BACKEND_JITERATI = 2
+} DT_TermscriptBackend;
+
+typedef struct
+{
+  uint32_t struct_size;         /* Set by dt_termscript_compile_options_init. */
+  uint32_t version;             /* DT_TERMSCRIPT_COMPILE_OPTIONS_VERSION. */
+  DT_TermscriptBackend backend; /* Text backend to emit; Jiterati is execution-only. */
+  const char *unit_name;        /* Borrowed; used by the C backend. */
+  const char *target;           /* Borrowed; reserved for target-specific lowering. */
+  uint32_t flags;               /* Must be 0 for now. */
+  uint32_t reserved[4];         /* Must be zero for ABI evolution. */
+} DT_TermscriptCompileOptions;
+
 typedef DT_Status (*DT_TermFunc) (DT_TermVM *vm, const DT_TermValue *argv,
                                   size_t argc, DT_TermValue *ret,
                                   DT_Error *error);
@@ -749,7 +770,10 @@ typedef struct
 /* Register a native module (copies the reference, not the table:
    the table must stay alive).  Thread-safe.  Duplicate names fail. */
 DT_Status dt_termscript_register_module (const DT_TermModule *module,
-                                         DT_Error *error);
+                                          DT_Error *error);
+void dt_termscript_compile_options_init (DT_TermscriptCompileOptions *options);
+const char *dt_termscript_backend_name (DT_TermscriptBackend backend);
+bool dt_termscript_backend_available (DT_TermscriptBackend backend);
 
 DT_TermVM *dt_termscript_create (DT_Error *error);
 /* Borrowed embedding VM; valid until dt_termscript_free. Use to register
@@ -760,9 +784,15 @@ void dt_termscript_free (DT_TermVM *vm); /* NULL-safe. */
 /* Run source text.  Captured G:puts output is appended to *output when
    non-NULL (caller frees with free()). */
 DT_Status dt_termscript_run_string (DT_TermVM *vm, const char *source,
-                                    char **output, DT_Error *error);
+                                     char **output, DT_Error *error);
 DT_Status dt_termscript_run_file (DT_TermVM *vm, const char *path,
-                                  char **output, DT_Error *error);
+                                   char **output, DT_Error *error);
+/* Execute through a selected backend.  C and QBE are text/AOT backends and
+   return DT_ERR_UNSUPPORTED here.  Jiterati currently supports only a checked
+   i32 `G:add` subset plus `G:puts` glue. */
+DT_Status dt_termscript_run_backend (DT_TermVM *vm, const char *source,
+                                     DT_TermscriptBackend backend,
+                                     char **output, DT_Error *error);
 /* Transpile to C (AOT backend for the termscript driver).  Borrowed
    string, valid until the next compile call or vm free.  Generated C
    is real, ahead-of-time compiled C: statements become C control flow
@@ -778,7 +808,10 @@ const char *dt_termscript_compile_to_c (DT_TermVM *vm, const char *source,
  * compile-time imports and runtime semantics as the C backend. Defines
  * ts_qbe_run(vm, error), returning DT_Status; no main is emitted. */
 const char *dt_termscript_compile_to_qbe (DT_TermVM *vm, const char *source,
-                                        DT_Error *error);
+                                         DT_Error *error);
+const char *dt_termscript_compile_backend (
+  DT_TermVM *vm, const char *source,
+  const DT_TermscriptCompileOptions *options, DT_Error *error);
 /* Compiled-code runtime for generated C (mirrors ts_rt_*; `line` feeds
  * error offsets).  dt_rt_set adopts *val on success. */
 DT_Status dt_rt_call (DT_TermVM *vm, const DT_TermValue *mod,

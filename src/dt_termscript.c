@@ -50,9 +50,17 @@ _Static_assert ((int) TS_ERR_SYSTEM == (int) DT_ERR_SYSTEM,
 _Static_assert ((int) TS_ERR_NOTFOUND == (int) DT_ERR_NOT_FOUND,
                 "status mirror");
 _Static_assert ((int) TS_ERR_PARSE == (int) DT_ERR_PARSE, "status mirror");
+_Static_assert ((int) TS_ERR_UNSUPPORTED == (int) DT_ERR_UNSUPPORTED,
+                "status mirror");
 _Static_assert ((int) TS_ERR_CANCELLED == (int) DT_ERR_CANCELLED,
                 "status mirror");
 _Static_assert ((int) TS_ERR_LIMIT == (int) DT_ERR_LIMIT, "status mirror");
+_Static_assert ((int) TS_BACKEND_C == (int) DT_TERMSCRIPT_BACKEND_C,
+                "backend mirror");
+_Static_assert ((int) TS_BACKEND_QBE == (int) DT_TERMSCRIPT_BACKEND_QBE,
+                "backend mirror");
+_Static_assert ((int) TS_BACKEND_JITERATI ==
+                (int) DT_TERMSCRIPT_BACKEND_JITERATI, "backend mirror");
 _Static_assert (sizeof ((TS_Error *) 0)->message ==
                 sizeof ((DT_Error *) 0)->message, "error message size");
 
@@ -79,6 +87,29 @@ ts_convert_error (TS_Error *dst, const DT_Error *src)
   dst->system_errno = src->system_errno;
   dst->offset = src->offset;
   memcpy (dst->message, src->message, sizeof dst->message);
+}
+
+void
+dt_termscript_compile_options_init (DT_TermscriptCompileOptions *options)
+{
+  if (!options)
+    return;
+  memset (options, 0, sizeof *options);
+  options->struct_size = sizeof *options;
+  options->version = DT_TERMSCRIPT_COMPILE_OPTIONS_VERSION;
+  options->backend = DT_TERMSCRIPT_BACKEND_C;
+}
+
+const char *
+dt_termscript_backend_name (DT_TermscriptBackend backend)
+{
+  return ts_backend_name ((TS_Backend) backend);
+}
+
+bool
+dt_termscript_backend_available (DT_TermscriptBackend backend)
+{
+  return ts_backend_available ((TS_Backend) backend);
 }
 
 static void
@@ -812,6 +843,25 @@ dt_termscript_run_file (DT_TermVM *vm, const char *path, char **output,
   return (DT_Status) st;
 }
 
+DT_Status
+dt_termscript_run_backend (DT_TermVM *vm, const char *source,
+                           DT_TermscriptBackend backend, char **output,
+                           DT_Error *error)
+{
+  TS_Error tserr;
+  TS_Status st;
+  if (!vm || !source)
+    {
+      dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0, "bad arguments");
+      return DT_ERR_INVALID_ARGUMENT;
+    }
+  ts_error_clear (&tserr);
+  st = ts_vm_run_backend (vm->tsvm, source, (TS_Backend) backend, output,
+                          &tserr);
+  dt_convert_error (error, &tserr);
+  return (DT_Status) st;
+}
+
 /* ---------------- compiled-code runtime (dt_rt_*) ----------------
  *
  * Thin DT_TermValue wrappers over the ts_rt_* helpers on the inner
@@ -1070,6 +1120,45 @@ dt_termscript_compile_to_qbe (DT_TermVM *vm, const char *source, DT_Error *error
   if (!copy) { dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory"); return NULL; }
   free (vm->compiled); vm->compiled = copy;
   return copy;
+}
+
+const char *
+dt_termscript_compile_backend (DT_TermVM *vm, const char *source,
+                               const DT_TermscriptCompileOptions *options,
+                               DT_Error *error)
+{
+  DT_TermscriptCompileOptions defaults;
+  const DT_TermscriptCompileOptions *opts = options;
+  if (!opts)
+    {
+      dt_termscript_compile_options_init (&defaults);
+      opts = &defaults;
+    }
+  if (!vm || !source)
+    { dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0, "bad arguments"); return NULL; }
+  if (opts->struct_size < offsetof (DT_TermscriptCompileOptions, reserved) ||
+      opts->version != DT_TERMSCRIPT_COMPILE_OPTIONS_VERSION)
+    { dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0, "unsupported compile options version"); return NULL; }
+  if (opts->flags != 0)
+    { dt_err_set (error, DT_ERR_UNSUPPORTED, 0, 0, "unsupported compile flags: 0x%x", opts->flags); return NULL; }
+  for (size_t i = 0; i < sizeof opts->reserved / sizeof opts->reserved[0]; i++)
+    if (opts->reserved[i] != 0)
+      { dt_err_set (error, DT_ERR_UNSUPPORTED, 0, 0, "unsupported compile option reserved field %zu", i); return NULL; }
+  switch (opts->backend)
+    {
+    case DT_TERMSCRIPT_BACKEND_C:
+      return dt_termscript_compile_to_c (vm, source, opts->unit_name, error);
+    case DT_TERMSCRIPT_BACKEND_QBE:
+      return dt_termscript_compile_to_qbe (vm, source, error);
+    case DT_TERMSCRIPT_BACKEND_JITERATI:
+      dt_err_set (error, DT_ERR_UNSUPPORTED, 0, 0,
+                  "Jiterati is an execution/JIT backend; use dt_termscript_run_backend");
+      return NULL;
+    default:
+      dt_err_set (error, DT_ERR_UNSUPPORTED, 0, 0,
+                  "unknown Termscript backend: %d", (int) opts->backend);
+      return NULL;
+    }
 }
 
 void

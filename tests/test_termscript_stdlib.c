@@ -370,6 +370,63 @@ parser_tests (void)
   char *out = NULL;
   CHECK (!ts_vm_run_string (vm, "const x = 1; if true do G:puts x; else G:puts 0; end", &out, &error));
   CHECK (!strcmp (out, "1\n")); free (out);
+  CHECK (!ts_vm_run_string (vm, "const paren_x = G:add(40, 2); G:puts(paren_x); const paren_g = G:load(\"G\"); G:puts(paren_g);", &out, &error));
+  CHECK (!strcmp (out, "42\n<module G>\n")); free (out);
+}
+
+static void
+backend_api_tests (void)
+{
+  TS_CompileOptions options;
+  const char *code;
+  ts_compile_options_init (&options);
+  CHECK (options.struct_size == sizeof options);
+  CHECK (options.version == TS_COMPILE_OPTIONS_VERSION);
+  CHECK (options.backend == TS_BACKEND_C);
+  CHECK (!strcmp (ts_backend_name (TS_BACKEND_C), "c"));
+  CHECK (!strcmp (ts_backend_name (TS_BACKEND_QBE), "qbe"));
+  CHECK (!strcmp (ts_backend_name (TS_BACKEND_JITERATI), "jiterati"));
+  CHECK (ts_backend_available (TS_BACKEND_C));
+  CHECK (ts_backend_available (TS_BACKEND_QBE));
+  bool have_jiterati = ts_backend_available (TS_BACKEND_JITERATI);
+  options.unit_name = "backend_api";
+  ts_error_clear (&error);
+  code = ts_vm_compile_backend (vm, "G:puts(\"api\");", &options, &error);
+  CHECK (code && strstr (code, "Termscript C backend"));
+  options.backend = TS_BACKEND_QBE;
+  code = ts_vm_compile_backend (vm, "G:puts(\"api\");", &options, &error);
+  CHECK (code && strstr (code, "ts_qbe_run"));
+  options.backend = TS_BACKEND_JITERATI;
+  CHECK (!ts_vm_compile_backend (vm, "G:puts(\"api\");", &options, &error));
+  CHECK (error.code == TS_ERR_UNSUPPORTED);
+  char *out = NULL;
+  if (have_jiterati)
+    {
+      CHECK (!ts_vm_run_backend (vm, "const j = G:add(40, 2); G:puts(j);",
+                                 TS_BACKEND_JITERATI, &out, &error));
+      CHECK (!strcmp (out, "42\n")); free (out); out = NULL;
+      CHECK (!ts_vm_run_backend (vm,
+        "const a = G:sub(44, 2); G:puts(a);"
+        "const b = G:mul(6, 7); G:puts(b);"
+        "const c = G:div(85, 2); G:puts(c);"
+        "const d = G:mod(85, 2); G:puts(d);"
+        "if G:eq(a, b) do G:puts(0); else G:puts(1); end"
+        "z = 0; while G:lt(z, 2) do z = G:add(z, 1); G:puts(z); end"
+        "const fallback = nil or G:add(1, 2); G:puts(fallback);",
+        TS_BACKEND_JITERATI, &out, &error));
+      CHECK (!strcmp (out, "42\n42\n42\n1\n0\n1\n2\n3\n")); free (out); out = NULL;
+      CHECK (ts_vm_run_backend (vm, "const j = G:div(1, 0); G:puts(j);",
+                                TS_BACKEND_JITERATI, &out, &error) == TS_ERR_PARSE);
+    }
+  else
+    CHECK (ts_vm_run_backend (vm, "const j = G:add(40, 2); G:puts(j);",
+                              TS_BACKEND_JITERATI, &out, &error) == TS_ERR_UNSUPPORTED);
+  CHECK (ts_vm_run_backend (vm, "G:puts(\"api\");", TS_BACKEND_C,
+                            &out, &error) == TS_ERR_UNSUPPORTED);
+  options.backend = TS_BACKEND_C;
+  options.reserved[0] = 1;
+  CHECK (!ts_vm_compile_backend (vm, "G:puts(\"api\");", &options, &error));
+  CHECK (error.code == TS_ERR_UNSUPPORTED);
 }
 
 static void *
@@ -394,7 +451,7 @@ main (void)
       if (!strcmp (name, "tinfo")) name = "terminfo";
       CHECK (!ts_vm_import (vm, name, &error));
     }
-  unicode_tests (); vt_tests (); html_tests (); bidi_tui_tests (); tty_tests (); pty_tests (); other_tests (); socket_tests (); parser_tests ();
+  unicode_tests (); vt_tests (); html_tests (); bidi_tui_tests (); tty_tests (); pty_tests (); other_tests (); socket_tests (); parser_tests (); backend_api_tests ();
   pthread_t threads[2];
   for (int i = 0; i < 2; i++) CHECK (!pthread_create (&threads[i], NULL, worker, NULL));
   for (int i = 0; i < 2; i++) CHECK (!pthread_join (threads[i], NULL));

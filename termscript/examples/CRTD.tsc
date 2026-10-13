@@ -1,0 +1,374 @@
+```text
+@alias Global :G
+@alias Runtime :R
+@alias CRTD :CRTD
+@alias Recorder :REC
+@alias Services :SVC
+
+@define $ENVELOPE $E
+@define $TERMINAL $TERM
+@define $CONFIGURATION $CNF
+@define $WORKSPACE $WS
+@define $SESSION $SES
+
+.interface
+    R:Declare:Section(:Interface)
+    R:Declare:Section(:Prelude)
+    R:Declare:Section(:Config)
+    R:Declare:Section(:Data)
+    R:Declare:Section(:Argparse)
+    R:Declare:Section(:Program)
+.end
+
+
+.section Interface
+
+    G:Declare:Namespace(:Services)
+
+    G:Declare:Symbol(:CRTD)
+    G:Declare:Symbol(:Recorder)
+    G:Declare:Symbol(:Workspace)
+    G:Declare:Symbol(:Session)
+    G:Declare:Symbol(:Participant)
+
+    G:Declare:Symbol(:Transport)
+    G:Declare:Symbol(:Synchronizer)
+    G:Declare:Symbol(:AccessControl)
+
+.end
+
+
+.section Prelude
+
+    lifetime CRTD := G:Import("std.crtd")
+        ~> R:ImportError(
+            "CRTD Import Error: ~s, ~e",
+            $E->Libname,
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        => R:Inject $E->Library, G:CRTD
+        ;
+
+    lifetime Recorder := G:Import("std.recorder")
+        ~> R:ImportError(
+            "Recorder Import Error: ~s, ~e",
+            $E->Libname,
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        => R:Inject $E->Library, G:Recorder
+        ;
+
+.end
+
+
+.section Config
+
+    config Transport := :TLS;
+    config Synchronization := :CRDT;
+    config DefaultRole := :EDITOR;
+
+    config WorkspaceConfig := {
+        "name": "team-workspace",
+        "private": true,
+        "transport": "tls",
+        "synchronization": "crdt",
+        "record_session": true,
+        "require_authentication": true
+    };
+
+    config AccessControl := {
+        "owner": :ADMIN,
+        "editor": :WRITE,
+        "viewer": :READ
+    };
+
+.end
+
+
+.section Data
+
+    lifetime Workspace := CRTD:CreateWorkspace(
+        WorkspaceConfig
+    )
+        ~> R:RuntimeError(
+            "Workspace initialization failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    lifetime Session := CRTD:CreateSession(
+        Workspace
+    )
+        ~> R:RuntimeError(
+            "Collaboration session initialization failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    lifetime Tape := REC:CreateTape()
+        ~> R:RuntimeError(
+            "Session recorder initialization failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+.end
+
+
+.section Argparse
+
+    $ArgParse := Services:CreateCLIParser();
+
+    $ArgParse:DeclareOption(
+        "--create",
+        :BOOLEAN,
+        "Create a collaborative workspace"
+    );
+
+    $ArgParse:DeclareOption(
+        "--join",
+        :STRING,
+        "Join a workspace using its session address"
+    );
+
+    $ArgParse:DeclareOption(
+        "--invite",
+        :STRING,
+        "Invite a teammate by account identifier"
+    );
+
+    $ArgParse:DeclareOption(
+        "--role",
+        :STRING,
+        "Assign a participant role: editor or viewer"
+    );
+
+    $ArgParse:DeclareOption(
+        "--file",
+        "-f",
+        :STRING,
+        "Open a project file in the shared workspace"
+    );
+
+    $ArgParse:DeclareOption(
+        "--record",
+        "-r",
+        :BOOLEAN,
+        "Record collaboration session events"
+    );
+
+    $ArgParse:DeclareOption(
+        "--list",
+        "-l",
+        :BOOLEAN,
+        "List workspace participants"
+    );
+
+    $ArgParse:DeclareOption(
+        "--leave",
+        :BOOLEAN,
+        "Leave the current collaboration session"
+    );
+
+    $ArgParse:DeclareOption(
+        "--help",
+        "-h",
+        :BOOLEAN,
+        "Display usage information"
+    );
+
+    $ArgParse:ValidateOption(
+        "--role",
+        ["editor", "viewer"]
+    );
+
+    $ArgParse:Parse(G:ARGV);
+
+.end
+
+
+.section Program
+
+    G:OnStartup(:Prelude);
+    G:OnStartup(:Config);
+    G:OnStartup(:Data);
+    G:OnStartup(:Argparse);
+
+    if $ArgParse->Has("--help") then
+        Services:PrintUsage($ArgParse);
+        R:Exit(:EXIT_SUCCESS);
+    end
+
+    if $ArgParse->Has("--create") then
+
+        CRTD:RequireAuthenticatedUser()
+            ~> R:PermissionError(
+                "Authentication required: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+        CRTD:PublishWorkspace(
+            Workspace,
+            WorkspaceConfig
+        )
+            ~> R:RuntimeError(
+                "Unable to publish workspace: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+        R:Print(
+            "Workspace created: %s\n",
+            CRTD:GetWorkspaceAddress(Workspace)
+        );
+
+    end
+
+    if $ArgParse->Has("--join") then
+
+        $WS := CRTD:JoinWorkspace(
+            $ArgParse->Get("--join")
+        )
+            ~> R:RuntimeError(
+                "Unable to join workspace: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+        CRTD:AuthenticateParticipant($WS)
+            ~> R:PermissionError(
+                "Workspace authentication failed: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+        CRTD:SynchronizeWorkspace(
+            $WS,
+            :Synchronization
+        )
+            ~> R:RuntimeError(
+                "Workspace synchronization failed: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+    end
+
+    if $ArgParse:Has("--invite") then
+
+        CRTD:RequireRole(
+            Workspace,
+            :ADMIN
+        )
+            ~> R:PermissionError(
+                "Administrator permission required: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+        CRTD:InviteParticipant(
+            Workspace,
+            $ArgParse->Get("--invite"),
+            $ArgParse->GetOr("--role", "editor")
+        )
+            ~> R:RuntimeError(
+                "Unable to invite participant: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+    end
+
+    if $ArgParse->Has("--list") then
+
+        CRTD:ListParticipants(Workspace)
+            ~> R:RuntimeError(
+                "Unable to list participants: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+        R:Exit(:EXIT_SUCCESS);
+
+    end
+
+    if $ArgParse->Has("--record") then
+        REC:Begin(Tape);
+    end
+
+    if $ArgParse->Has("--file") then
+
+        CRTD:OpenSharedFile(
+            Session,
+            $ArgParse->Get("--file")
+        )
+            ~> R:RuntimeError(
+                "Unable to open shared file: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+    end
+
+    CRTD:StartCollaboration(Session)
+        ~> R:RuntimeError(
+            "Unable to start collaboration: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    CRTD:SynchronizeEdits(
+        Session,
+        :Synchronization
+    )
+        ~> R:RuntimeError(
+            "Edit synchronization failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    CRTD:OnParticipantJoined(Session,
+        Services:NotifyParticipantJoined
+    );
+
+    CRTD:OnEditConflict(Session,
+        Services:ResolveEditConflict
+    );
+
+    CRTD:OnConnectionLost(Session,
+        Services:ReconnectParticipant
+    );
+
+    CRTD:RunEventLoop(Session);
+
+    if $ArgParse->Has("--record") then
+        REC:Save(Tape);
+    end
+
+    if $ArgParse->Has("--leave") then
+        CRTD:LeaveWorkspace(Session);
+    end
+
+    CRTD:CloseSession(Session);
+
+    R:Exit(:EXIT_SUCCESS);
+
+.end
+```

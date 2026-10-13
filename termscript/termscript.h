@@ -2,9 +2,10 @@
  *
  * Termscript is a small Turing-complete scripting language for terminal
  * automation.  This header is deliberately independent of Termlib: it
- * includes only standard C headers, and programs need only link
- * libtermscript_standalone.  Including this header never pulls in
- * termlib.h, and no Termlib library is required at link time.
+ * includes only standard C headers, and programs link
+ * libtermscript_standalone plus the vendored NovoParse runtime.  Including
+ * this header never pulls in termlib.h, and no Termlib library is required at
+ * link time.
  *
  * Two audiences:
  *
@@ -13,7 +14,7 @@
  *    ts_vm_run_file), collect G:puts output, free the VM.  Use
  *    ts_check_syntax to validate without executing, and
  *    ts_vm_compile_to_c for the transpiled-C backend (generated C links
- *    against libtermscript_standalone).
+ *    against libtermscript_standalone and libnovoparse).
  *
  * 2. Native extensions: implement TS_Module tables (static storage) of
  *    TS_Func callbacks and register them per VM.  Build return values
@@ -67,6 +68,8 @@ extern "C"
 #define TS_ERROR_MSG_SIZE 256
 #define TS_MAX_MODULES 128
 
+#define TS_COMPILE_OPTIONS_VERSION 1u
+
 /* Status codes.  Numeric values match Termlib DT_Status on purpose. */
 typedef enum
 {
@@ -92,10 +95,31 @@ typedef struct
   char message[TS_ERROR_MSG_SIZE]; /* Always NUL-terminated. */
 } TS_Error;
 
+typedef enum
+{
+  TS_BACKEND_C = 0,
+  TS_BACKEND_QBE = 1,
+  TS_BACKEND_JITERATI = 2
+} TS_Backend;
+
+typedef struct
+{
+  uint32_t struct_size;         /* Set by ts_compile_options_init. */
+  uint32_t version;             /* TS_COMPILE_OPTIONS_VERSION. */
+  TS_Backend backend;           /* Text backend to emit; Jiterati is execution-only. */
+  const char *unit_name;        /* Borrowed; used by the C backend. */
+  const char *target;           /* Borrowed; reserved for target-specific lowering. */
+  uint32_t flags;               /* Must be 0 for now. */
+  uint32_t reserved[4];         /* Must be zero for ABI evolution. */
+} TS_CompileOptions;
+
 const char *ts_status_string (TS_Status status);
 void ts_error_set (TS_Error *error, TS_Status code, int system_errno,
                    size_t offset, const char *fmt, ...);
 void ts_error_clear (TS_Error *error); /* NULL-safe. */
+void ts_compile_options_init (TS_CompileOptions *options); /* NULL-safe. */
+const char *ts_backend_name (TS_Backend backend); /* Never NULL. */
+bool ts_backend_available (TS_Backend backend);
 
 /* Values. */
 typedef enum
@@ -188,6 +212,13 @@ TS_Status ts_vm_run_string (TS_VM *vm, const char *source, char **output,
                             TS_Error *error);
 TS_Status ts_vm_run_file (TS_VM *vm, const char *path, char **output,
                           TS_Error *error);
+/* Execute through a selected backend.  C and QBE are text/AOT backends and
+ * return TS_ERR_UNSUPPORTED here.  Jiterati is an experimental execution/JIT
+ * backend; the current adapter supports only a checked i32 `G:add` subset plus
+ * `G:puts` glue and reports TS_ERR_UNSUPPORTED for broader Termscript. */
+TS_Status ts_vm_run_backend (TS_VM *vm, const char *source,
+                             TS_Backend backend, char **output,
+                             TS_Error *error);
 /* Validate without executing. */
 TS_Status ts_check_syntax (const char *source, TS_Error *error);
 /* Transpile to C (AOT backend for tooling).  Borrowed string, valid
@@ -212,6 +243,13 @@ const char *ts_vm_compile_to_c (TS_VM *vm, const char *source,
  * returning a status; callers supply their own main/embedding wrapper. */
 const char *ts_vm_compile_to_qbe (TS_VM *vm, const char *source,
                                 bool dt_mode, TS_Error *error);
+/* Unified text-backend dispatcher.  `options` may be NULL, which selects the
+ * default C backend.  Unknown options, nonzero flags, and currently unavailable
+ * backends fail with TS_ERR_UNSUPPORTED/TS_ERR_INVAL and leave prior compiled
+ * output untouched. */
+const char *ts_vm_compile_backend (TS_VM *vm, const char *source,
+                                   const TS_CompileOptions *options,
+                                   TS_Error *error);
 
 /* Compiled-code runtime: helpers emitted C calls into.  `line` is the
  * Termscript source line carried into error offsets (0 when unknown).

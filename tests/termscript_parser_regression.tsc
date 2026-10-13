@@ -1,0 +1,15 @@
+const emulator = "identifier containing or";
+G:puts emulator;
+
+const number = G:add 12345 5;
+G:puts number;
+
+const paren_number = G:add(40, 2);
+G:puts(paren_number);
+
+const g_module = G:load("G");
+G:puts(g_module);
+
+G:puts true;
+G:puts false;
+G:puts nil;

@@ -1,0 +1,246 @@
+
+@alias Global :G
+@alias Runtime :R
+@alias Dynalo :DYN
+@alias Services :SVC
+
+@define $ENVELOPE $E
+@define $CONFIGURATION $CNF
+@define $PLUGIN $PLG
+@define $SYMBOL $SYM
+
+.interface
+    R:Declare:Section(:Interface)
+    R:Declare:Section(:Prelude)
+    R:Declare:Section(:Config)
+    R:Declare:Section(:Data)
+    R:Declare:Section(:Argparse)
+    R:Declare:Section(:Program)
+.end
+
+
+.section Interface
+
+    G:Declare:Namespace(:Services)
+
+    G:Declare:Symbol(:Dynalo)
+    G:Declare:Symbol(:Plugin)
+    G:Declare:Symbol(:PluginHandle)
+    G:Declare:Symbol(:PluginAPI)
+
+.end
+
+
+.section Prelude
+
+    lifetime Dynalo := G:Import("std.dynalo")
+        ~> R:ImportError(
+            "Dynalo Import Error: ~s, ~e",
+            $E->Libname,
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        => R:Inject $E->Library, G:Dynalo
+        ;
+
+.end
+
+
+.section Config
+
+    config PluginABI := 1;
+    config PluginEntryPoint := "termscript_plugin_init";
+    config PluginShutdownPoint := "termscript_plugin_shutdown";
+    config PluginDirectory := "./plugins";
+
+    config PluginConfig := {
+        "abi_version": 1,
+        "require_init_symbol": true,
+        "require_shutdown_symbol": true,
+        "search_current_directory": false
+    };
+
+.end
+
+
+.section Data
+
+    lifetime PluginHandle := null;
+    lifetime PluginAPI := null;
+
+    lifetime Plugin := {
+        "loaded": false,
+        "initialized": false,
+        "active": false
+    };
+
+.end
+
+
+.section Argparse
+
+    $ArgParse := Services:CreateCLIParser();
+
+    $ArgParse:DeclareOption(
+        "--load",
+        "-l",
+        :STRING,
+        "Load a plugin library"
+    );
+
+    $ArgParse:DeclareOption(
+        "--command",
+        "-c",
+        :STRING,
+        "Invoke a plugin command"
+    );
+
+    $ArgParse:DeclareOption(
+        "--list-symbols",
+        :BOOLEAN,
+        "Inspect exported plugin symbols"
+    );
+
+    $ArgParse:DeclareOption(
+        "--inspect",
+        :BOOLEAN,
+        "Inspect plugin metadata without initialization"
+    );
+
+    $ArgParse:DeclareOption(
+        "--help",
+        "-h",
+        :BOOLEAN,
+        "Display usage information"
+    );
+
+    $ArgParse:Parse(G:ARGV);
+
+.end
+
+
+.section Program
+
+    G:OnStartup(:Prelude);
+    G:OnStartup(:Config);
+    G:OnStartup(:Data);
+    G:OnStartup(:Argparse);
+
+    if $ArgParse->Has("--help") then
+        Services:PrintUsage($ArgParse);
+        R:Exit(:EXIT_SUCCESS);
+    end
+
+    if not $ArgParse:Has("--load") then
+        R:PrintError("A plugin library is required.\n");
+        R:Exit(:EXIT_FAILURE);
+    end
+
+    $PLUGIN := Services:ResolvePluginPath(
+        PluginDirectory,
+        $ArgParse->Get("--load")
+    )
+        ~> R:ConfigurationError(
+            "Invalid plugin path: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    PluginHandle := DYN:OpenLibrary($PLUGIN)
+        ~> R:PluginLoadError(
+            "Unable to load plugin: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    Plugin->loaded := true;
+
+    $SYM := DYN:ResolveSymbol(
+        PluginHandle,
+        "termscript_plugin_abi"
+    )
+        ~> R:PluginSymbolError(
+            "Plugin ABI symbol is missing: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    if DYN:ReadABIVersion($SYM) != PluginABI then
+        R:PrintError("Incompatible plugin ABI.\n");
+        DYN:CloseLibrary(PluginHandle);
+        R:Exit(:EXIT_FAILURE);
+    end
+
+    if $ArgParse->Has("--inspect") then
+        DYN:InspectLibrary(PluginHandle);
+        DYN:CloseLibrary(PluginHandle);
+        R:Exit(:EXIT_SUCCESS);
+    end
+
+    $SYM := DYN:ResolveSymbol(
+        PluginHandle,
+        PluginEntryPoint
+    )
+        ~> R:PluginSymbolError(
+            "Plugin initialization symbol is missing: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    PluginAPI := DYN:InvokePluginInit(
+        $SYM,
+        PluginABI
+    )
+        ~> R:PluginInitError(
+            "Plugin initialization failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    Plugin->initialized := true;
+    Plugin->active := true;
+
+    if $ArgParse->Has("--list-symbols") then
+        DYN:ListExports(PluginHandle);
+    end
+
+    if $ArgParse->Has("--command") then
+        Services:DispatchPluginCommand(
+            PluginAPI,
+            $ArgParse->Get("--command")
+        )
+            ~> R:PluginRuntimeError(
+                "Plugin command failed: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+    end
+
+    $SYM := DYN:ResolveSymbol(
+        PluginHandle,
+        PluginShutdownPoint
+    );
+
+    if $SYM != null then
+        DYN:InvokePluginShutdown(
+            $SYM,
+            PluginAPI
+        );
+    end
+
+    Plugin->active := false;
+    Plugin->initialized := false;
+
+    DYN:CloseLibrary(PluginHandle);
+
+    Plugin->loaded := false;
+
+    R:Exit(:EXIT_SUCCESS);
+
+.end

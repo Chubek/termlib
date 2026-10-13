@@ -11,25 +11,25 @@ find_package(Threads REQUIRED)
 include(GNUInstallDirs)
 include(CTest)
 
-# Perl drives scripts/aurocks.pl, which compiles Termscript.g into the
-# Termscript parser.  There is no fallback: the grammar is the source of
-# truth for the language front end.
-find_program(TERMLIB_PERL perl REQUIRED)
-set(TERMLIB_AUROCKS ${CMAKE_CURRENT_SOURCE_DIR}/scripts/aurocks.pl)
-
-# ── generated Termscript parser ──────────────────────────────────────
-# One translation unit, shared by the standalone runtime below.  The
-# custom entry point avoids clashing with any other aurocks output; the
-# ts_mk_* actions it calls live in ts_runtime.c.
-set(TERMLIB_PARSER_C ${CMAKE_CURRENT_BINARY_DIR}/termscript_parser.c)
+# NovoParse compiles termscript/Termscript.ng into a C descriptor header.  The
+# runtime adapter in termscript/ts_parser_ng.c maps NovoParse syntax trees into
+# the backend-independent AST consumed by the VM, C, and QBE backends.
+set(TERMLIB_PARENT_BUILD_TESTING ${BUILD_TESTING})
+set(BUILD_TESTING OFF)
+add_subdirectory(third_party/novoparse EXCLUDE_FROM_ALL)
+set(BUILD_TESTING ${TERMLIB_PARENT_BUILD_TESTING})
+set(TERMLIB_NOVOPARSE ${CMAKE_CURRENT_BINARY_DIR}/third_party/novoparse/novoparse)
+set(TERMLIB_PARSER_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/termscript)
+set(TERMLIB_PARSER_H ${TERMLIB_PARSER_DIR}/TermscriptParser.h)
 add_custom_command(
-  OUTPUT ${TERMLIB_PARSER_C}
-  COMMAND ${TERMLIB_PERL} ${TERMLIB_AUROCKS} --entrypoint ts_gram_parse
-          ${CMAKE_CURRENT_SOURCE_DIR}/termscript/Termscript.g
-          > ${TERMLIB_PARSER_C}
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/termscript/Termscript.g
-          ${TERMLIB_AUROCKS}
-  COMMENT "Generating Termscript parser (aurocks)"
+  OUTPUT ${TERMLIB_PARSER_H}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${TERMLIB_PARSER_DIR}
+  COMMAND ${TERMLIB_NOVOPARSE} generate
+          ${CMAKE_CURRENT_SOURCE_DIR}/termscript/Termscript.ng
+          --profile C -o ${TERMLIB_PARSER_H}
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/termscript/Termscript.ng
+          novoparse_cli
+  COMMENT "Generating Termscript parser descriptor (NovoParse)"
   VERBATIM
 )
 
@@ -58,13 +58,45 @@ target_link_libraries(termlib PUBLIC Threads::Threads)
 # ── libtermscript_standalone (embedding + extension API, no Termlib) ─
 add_library(termscript_standalone STATIC
   termscript/ts_runtime.c
-  ${TERMLIB_PARSER_C}
+  termscript/ts_parser_ng.c
+  ${TERMLIB_PARSER_H}
 )
 target_include_directories(termscript_standalone PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
-target_link_libraries(termscript_standalone PRIVATE Threads::Threads)
+target_include_directories(termscript_standalone PRIVATE
+  ${TERMLIB_PARSER_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/novoparse/runtime
+)
+target_link_libraries(termscript_standalone PRIVATE Threads::Threads novoparse_runtime)
+
+set(TS_JITERATI_DEFAULT OFF)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(TS_JITERATI_DEFAULT ON)
+endif()
+option(TERMSCRIPT_JITERATI "Build experimental Jiterati execution backend (host AMD64)" ${TS_JITERATI_DEFAULT})
+if(TERMSCRIPT_JITERATI)
+  if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    message(FATAL_ERROR "The current Jiterati executable backend only supports host AMD64")
+  endif()
+  set(TS_JITERATI_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jiterati)
+  if(NOT EXISTS "${TS_JITERATI_ROOT}/include/Jiterati.hpp" OR
+     NOT EXISTS "${TS_JITERATI_ROOT}/BE/AMD64/Backend.cpp")
+    message(FATAL_ERROR "TERMSCRIPT_JITERATI requires the bundled third_party/jiterati sources")
+  endif()
+  target_sources(termscript_standalone PRIVATE
+    termscript/ts_jiterati.cpp
+    third_party/jiterati/src/JIT.cpp
+    third_party/jiterati/BE/AMD64/Backend.cpp
+  )
+  target_compile_features(termscript_standalone PRIVATE cxx_std_17)
+  target_compile_definitions(termscript_standalone PRIVATE TERMSCRIPT_HAVE_JITERATI=1)
+  target_include_directories(termscript_standalone SYSTEM PRIVATE
+    ${TS_JITERATI_ROOT}
+    ${TS_JITERATI_ROOT}/include
+  )
+endif()
 
 # ── libtermscript (Termlib Termscript bindings; links standalone) ─────
 add_library(termscript STATIC
@@ -88,11 +120,14 @@ if(TARGET termscript_stdlib)
   target_link_libraries(termscript PUBLIC termscript_stdlib)
   target_compile_definitions(termscript PRIVATE TERMSCRIPT_HAVE_STDLIB=1)
 endif()
-
-# The generated parser carries benign unused-variable warnings from the
-# aurocks runtime scaffolding; keep hand-written sources warning-clean
-# without drowning the build log.
-set_source_files_properties(${TERMLIB_PARSER_C} PROPERTIES COMPILE_OPTIONS "-w")
+if(TERMSCRIPT_JITERATI)
+  foreach(lib IN LISTS CMAKE_CXX_IMPLICIT_LINK_LIBRARIES)
+    if(lib MATCHES "^(stdc\\+\\+|c\\+\\+|c\\+\\+abi)$")
+      list(APPEND TERMSCRIPT_NATIVE_FLAGS "-l${lib}")
+      list(APPEND TERMSCRIPT_STATIC_FLAGS "-l${lib}")
+    endif()
+  endforeach()
+endif()
 
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(termlib PRIVATE -Wall -Wextra)
@@ -128,8 +163,8 @@ if(TARGET termscript_stdlib)
   string(APPEND TS_DRIVER_BUILD_LIBS "\"$<TARGET_FILE:termscript_stdlib>\",\n")
   string(APPEND TS_DRIVER_INSTALL_LIBS "\"-ltermscript_stdlib\",\n")
 endif()
-string(APPEND TS_DRIVER_BUILD_LIBS "\"$<TARGET_FILE:termscript_standalone>\",\n\"$<TARGET_FILE:termlib>\",\n")
-string(APPEND TS_DRIVER_INSTALL_LIBS "\"-ltermscript_standalone\",\n\"-ltermlib\",\n")
+string(APPEND TS_DRIVER_BUILD_LIBS "\"$<TARGET_FILE:termscript_standalone>\",\n\"-Wl,-rpath,$<TARGET_FILE_DIR:novoparse_runtime>\",\n\"$<TARGET_FILE:novoparse_runtime>\",\n\"$<TARGET_FILE:termlib>\",\n")
+string(APPEND TS_DRIVER_INSTALL_LIBS "\"-ltermscript_standalone\",\n\"-lnovoparse\",\n\"-ltermlib\",\n")
 if(TARGET lexbor_static)
   string(APPEND TS_DRIVER_BUILD_LIBS "\"$<TARGET_FILE:lexbor_static>\",\n")
   string(APPEND TS_DRIVER_INSTALL_LIBS "\"-llexbor_static\",\n")
@@ -172,7 +207,7 @@ install(FILES termlib.h termlib.hpp
 install(FILES termscript/termscript.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript
 )
-install(FILES termscript/Termscript.g
+install(FILES termscript/Termscript.ng
   DESTINATION ${CMAKE_INSTALL_DATADIR}/termlib
 )
 
@@ -191,6 +226,9 @@ add_custom_target(termlib-manual
 )
 
 if(BUILD_TESTING)
+  add_test(NAME termscript_parser_regression COMMAND
+    $<TARGET_FILE:termscript-driver>
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_parser_regression.tsc)
   if(TERMSCRIPT_NATIVE)
     add_test(NAME termscript_native COMMAND ${CMAKE_COMMAND}
       -DDRIVER=$<TARGET_FILE:termscript-driver>

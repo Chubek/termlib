@@ -56,4 +56,27 @@ does not emit `main`. The command-line driver supplies that wrapper automaticall
 
 Existing invocations keep their behavior: scripts run in the VM by default,
 `-o program` uses the C backend, and `-c` emits C. Select `--backend qbe`
-explicitly to use the native backend.
+explicitly to use the QBE native backend.
+
+## Backend flag matrix
+
+| Invocation | Meaning |
+| --- | --- |
+| `termscript script.tsc` | Run with the VM. |
+| `termscript -c [-o file.c] script.tsc` | Emit C. |
+| `termscript -o program script.tsc` | Compile/link through the C backend. |
+| `termscript --backend c ...` | Explicit C backend spelling. |
+| `termscript --backend qbe -c -o file.ssa script.tsc` | Emit QBE IL. |
+| `termscript --backend qbe -o program script.tsc` | Build native executable through QBE/Keystone. |
+| `termscript --backend jiterati script.tsc` | Execute through the Jiterati JIT adapter. |
+
+`--cc CC` selects the C compiler used for driver-managed links.  `--static`
+applies to link steps only.  Jiterati is execution-only: combining
+`--backend jiterati` with `-c` or `-o` is rejected.
+
+## Jiterati execution backend
+
+The Jiterati path is not a text or object emitter.  It executes the runnable
+Termscript subset through `dt_termscript_run_backend` and JITs checked i32
+arithmetic/comparison calls in the `G` module on builds where the vendored AMD64
+backend is available.  Native executable memory is used; this is not a sandbox.

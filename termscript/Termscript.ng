@@ -1,0 +1,61 @@
+%grammar Termscript;
+%start program;
+%disambiguate first;
+
+%token TRIVIA /([ \t\r\n]+|#[^\n]*)+/;
+%token NUMBER /-?(0|[1-9][0-9]*)/;
+%token STRING /"([^"\\]|\\.)*"/;
+%token IDENT /[A-Za-z_][A-Za-z0-9_]*/;
+
+%left "or";
+
+# NovoParse-backed Termscript grammar.
+#
+# This file is the parser source for the currently implemented Termscript
+# executable subset.  The richer section-oriented examples under
+# termscript/examples are design inputs for the next semantic-IR stage; they are
+# intentionally not accepted here until syntax, ownership, cleanup, diagnostics,
+# and backend lowering are implemented together.  Native calls accept both the
+# historical whitespace form (`G:puts value`) and the parenthesized form used by
+# the design examples for simple scalar/reference arguments (`G:puts(value)`).
+
+program: layout (stmt layout)* => Program;
+
+layout: TRIVIA* => Layout;
+gap: TRIVIA+ => Gap;
+
+stmt: const_decl => Stmt
+    | while_stmt => Stmt
+    | if_stmt => Stmt
+    | assign_stmt => Stmt
+    | expr_stmt => Stmt;
+
+const_decl: "const" gap IDENT layout "=" layout expr layout ";" => ConstDecl;
+assign_stmt: IDENT layout "=" layout expr layout ";" => AssignStmt;
+expr_stmt: expr layout ";" => ExprStmt;
+while_stmt: "while" gap expr gap "do" layout program layout "end" => WhileStmt;
+if_stmt: "if" gap expr gap "do" layout program layout if_tail => IfStmt;
+if_tail: "else" layout program layout "end" => ElseTail
+       | "end" => NoElseTail;
+
+expr: expr gap "or" gap unary => OrExpr
+    | unary => Expr;
+
+unary: "&" IDENT => RefExpr
+     | call => CallExpr
+     | IDENT => IdentExpr
+     | NUMBER => NumberExpr
+     | STRING => StringExpr;
+
+call: IDENT layout ":" layout IDENT call_args => Call;
+
+call_args: (gap arg)* => SpaceArgs
+         | layout "(" layout arg_list layout ")" => ParenArgs
+         | layout "(" layout ")" => EmptyParenArgs;
+
+arg_list: arg (layout "," layout arg)* layout ","? => ArgList;
+
+arg: STRING => ArgString
+   | NUMBER => ArgNumber
+   | "&" IDENT => ArgRef
+   | IDENT => ArgWord;

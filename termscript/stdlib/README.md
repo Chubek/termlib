@@ -96,8 +96,8 @@ module (`ts_runtime.c`); `ts_vm_import` / `ts_vm_add_search_path`
 are new public API in `termscript.h`. Imports execute in the
 caller's scope (bindings persist — that is the export mechanism),
 share output and the step budget, resolve through VM search paths
-plus `TERMSCRIPT_PATH`, and reject cycles. The aurocks grammar
-(`Termscript.g`) and `scripts/aurocks.pl` are untouched.
+plus `TERMSCRIPT_PATH`, and reject cycles. The NovoParse grammar
+(`Termscript.ng`) remains backend-independent.
 
 ## Built with
 

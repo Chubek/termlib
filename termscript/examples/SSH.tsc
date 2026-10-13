@@ -1,0 +1,287 @@
+```text
+@alias Global :G
+@alias Runtime :R
+@alias SSH :SSH
+@alias Firewall :FW
+@alias Services :SVC
+
+@define $ENVELOPE $E
+@define $TERMINAL $TERM
+@define $CONFIGURATION $CNF
+@define $SSH_PORT $PORT
+
+.interface
+    R:Declare:Section(:Interface)
+    R:Declare:Section(:Prelude)
+    R:Declare:Section(:Config)
+    R:Declare:Section(:Data)
+    R:Declare:Section(:Argparse)
+    R:Declare:Section(:Program)
+.end
+
+
+.section Interface
+
+    G:Declare:Namespace(:Services)
+
+    G:Declare:Symbol(:SSH)
+    G:Declare:Symbol(:Firewall)
+    G:Declare:Symbol(:SSHConfig)
+    G:Declare:Symbol(:SSHSession)
+
+    G:Declare:Symbol(:Port)
+    G:Declare:Symbol(:Host)
+    G:Declare:Symbol(:Protocol)
+
+.end
+
+
+.section Prelude
+
+    lifetime SSH := G:Import("std.ssh")
+        ~> R:ImportError(
+            "SSH Import Error: ~s, ~e",
+            $E->Libname,
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        => R:Inject $E->Library, G:SSH
+        ;
+
+    lifetime Firewall := G:Import("std.firewall")
+        ~> R:ImportError(
+            "Firewall Import Error: ~s, ~e",
+            $E->Libname,
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        => R:Inject $E->Library, G:Firewall
+        ;
+
+.end
+
+
+.section Config
+
+    config DefaultPort := 22;
+    config DefaultProtocol := :TCP;
+    config DefaultHost := "127.0.0.1";
+
+    config SSHConfig := {
+        "port": 22,
+        "protocol": "tcp",
+        "listen_address": "127.0.0.1",
+        "password_authentication": false,
+        "root_login": false
+    };
+
+.end
+
+
+.section Data
+
+    lifetime SSHSession := SSH:CreateServiceContext()
+        ~> R:RuntimeError(
+            "SSH context initialization failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    lifetime FirewallContext := Firewall:CreateContext()
+        ~> R:RuntimeError(
+            "Firewall initialization failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+.end
+
+
+.section Argparse
+
+    $ArgParse := Services:CreateCLIParser();
+
+    $ArgParse:DeclareOption(
+        "--port",
+        "-p",
+        :INTEGER,
+        "SSH listening port (1-65535)"
+    );
+
+    $ArgParse:DeclareOption(
+        "--host",
+        "-H",
+        :STRING,
+        "SSH bind address"
+    );
+
+    $ArgParse:DeclareOption(
+        "--open-port",
+        :BOOLEAN,
+        "Request a firewall rule for the SSH port"
+    );
+
+    $ArgParse:DeclareOption(
+        "--status",
+        "-s",
+        :BOOLEAN,
+        "Display SSH service and port status"
+    );
+
+    $ArgParse:DeclareOption(
+        "--dry-run",
+        :BOOLEAN,
+        "Preview changes without applying them"
+    );
+
+    $ArgParse:DeclareOption(
+        "--help",
+        "-h",
+        :BOOLEAN,
+        "Display usage information"
+    );
+
+    $ArgParse:ValidateRange(
+        "--port",
+        1,
+        65535
+    );
+
+    $ArgParse:Parse(G:ARGV);
+
+.end
+
+
+.section Program
+
+    G:OnStartup(:Prelude);
+    G:OnStartup(:Config);
+    G:OnStartup(:Data);
+    G:OnStartup(:Argparse);
+
+    if $ArgParse->Has("--help") then
+        Services:PrintUsage($ArgParse);
+        R:Exit(:EXIT_SUCCESS);
+    end
+
+    $PORT := $ArgParse->GetOr(
+        "--port",
+        :DefaultPort
+    );
+
+    $HOST := $ArgParse->GetOr(
+        "--host",
+        :DefaultHost
+    );
+
+    if $ArgParse->Has("--status") then
+        SSH:PrintStatus(
+            SSHSession,
+            $PORT,
+            $HOST
+        )
+            ~> R:RuntimeError(
+                "Unable to inspect SSH status: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+        R:Exit(:EXIT_SUCCESS);
+    end
+
+    if not SSH:ValidateBindAddress($HOST) then
+        R:PrintError("Invalid SSH bind address.\n");
+        R:Exit(:EXIT_FAILURE);
+    end
+
+    if $ArgParse->Has("--dry-run") then
+        SSH:PreviewConfiguration(
+            SSHSession,
+            $HOST,
+            $PORT,
+            :DefaultProtocol
+        );
+
+        if $ArgParse->Has("--open-port") then
+            Firewall:PreviewRule(
+                FirewallContext,
+                $PORT,
+                :DefaultProtocol
+            );
+        end
+
+        R:Exit(:EXIT_SUCCESS);
+    end
+
+    SSH:ValidateConfiguration(SSHConfig)
+        ~> R:ConfigurationError(
+            "Invalid SSH configuration: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    SSH:ApplyConfiguration(
+        SSHSession,
+        SSHConfig,
+        $HOST,
+        $PORT
+    )
+        ~> R:RuntimeError(
+            "Unable to configure SSH: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    if $ArgParse->Has("--open-port") then
+
+        Firewall:RequireAuthorization(
+            FirewallContext
+        )
+            ~> R:PermissionError(
+                "Firewall authorization required: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+
+        Firewall:OpenPort(
+            FirewallContext,
+            $PORT,
+            :DefaultProtocol,
+            $HOST
+        )
+            ~> R:RuntimeError(
+                "Unable to configure firewall rule: ~s",
+                $E->Msg
+            )
+            -> R:DieGracefully(:EXIT_FAILURE)
+            ;
+    end
+
+    SSH:VerifyListener(
+        SSHSession,
+        $HOST,
+        $PORT
+    )
+        ~> R:RuntimeError(
+            "SSH listener verification failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    R:Print(
+        "SSH configuration completed on %s:%d\n",
+        $HOST,
+        $PORT
+    );
+
+    R:Exit(:EXIT_SUCCESS);
+
+.end
+```

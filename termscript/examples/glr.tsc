@@ -1,0 +1,218 @@
+
+@alias Global :G
+@alias Runtime :R
+@alias Grammar :GLR
+@alias Services :SVC
+
+@define $ENVELOPE $E
+@define $CONFIGURATION $CNF
+@define $SOURCE $SRC
+@define $GRAMMAR $GRAM
+
+.interface
+    R:Declare:Section(:Interface)
+    R:Declare:Section(:Prelude)
+    R:Declare:Section(:Config)
+    R:Declare:Section(:Data)
+    R:Declare:Section(:Argparse)
+    R:Declare:Section(:Program)
+.end
+
+
+.section Interface
+
+    G:Declare:Namespace(:Services)
+
+    G:Declare:Symbol(:Grammar)
+    G:Declare:Symbol(:Parser)
+    G:Declare:Symbol(:ParseResult)
+    G:Declare:Symbol(:SyntaxTree)
+
+.end
+
+
+.section Prelude
+
+    lifetime Grammar := G:Import("std.libglr")
+        ~> R:ImportError(
+            "GLR Import Error: ~s, ~e",
+            $E->Libname,
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        => R:Inject $E->Library, G:Grammar
+        ;
+
+.end
+
+
+.section Config
+
+    config ParserMode := :SCANNERLESS;
+    config ParsingAlgorithm := :GLR;
+    config AmbiguityPolicy := :REPORT;
+    config MaximumParseDepth := 4096;
+
+    config GrammarConfig := {
+        "scannerless": true,
+        "algorithm": "glr",
+        "ambiguity": "report",
+        "preserve_source_locations": true
+    };
+
+.end
+
+
+.section Data
+
+    lifetime Parser := GLR:CreateParser(
+        GrammarConfig
+    )
+        ~> R:RuntimeError(
+            "Parser initialization failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    lifetime ParseResult := GLR:CreateResult();
+
+.end
+
+
+.section Argparse
+
+    $ArgParse := Services:CreateCLIParser();
+
+    $ArgParse:DeclareOption(
+        "--grammar",
+        "-g",
+        :STRING,
+        "Load a grammar definition"
+    );
+
+    $ArgParse:DeclareOption(
+        "--source",
+        "-s",
+        :STRING,
+        "Parse a source file"
+    );
+
+    $ArgParse:DeclareOption(
+        "--dump-tree",
+        :BOOLEAN,
+        "Print the resulting syntax tree"
+    );
+
+    $ArgParse:DeclareOption(
+        "--ambiguities",
+        :BOOLEAN,
+        "Report ambiguous parses"
+    );
+
+    $ArgParse:DeclareOption(
+        "--debug",
+        :BOOLEAN,
+        "Print parser diagnostics"
+    );
+
+    $ArgParse:DeclareOption(
+        "--help",
+        "-h",
+        :BOOLEAN,
+        "Display usage information"
+    );
+
+    $ArgParse:Parse(G:ARGV);
+
+.end
+
+
+.section Program
+
+    G:OnStartup(:Prelude);
+    G:OnStartup(:Config);
+    G:OnStartup(:Data);
+    G:OnStartup(:Argparse);
+
+    if $ArgParse->Has("--help") then
+        Services:PrintUsage($ArgParse);
+        R:Exit(:EXIT_SUCCESS);
+    end
+
+    if not $ArgParse->Has("--grammar") then
+        R:PrintError("A grammar file is required.\n");
+        R:Exit(:EXIT_FAILURE);
+    end
+
+    if not $ArgParse->Has("--source") then
+        R:PrintError("A source file is required.\n");
+        R:Exit(:EXIT_FAILURE);
+    end
+
+    $GRAM := GLR:LoadGrammar(
+        $ArgParse->Get("--grammar"),
+        :ParserMode
+    )
+        ~> R:GrammarError(
+            "Grammar loading failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    GLR:AttachGrammar(
+        Parser,
+        $GRAM
+    )
+        ~> R:RuntimeError(
+            "Unable to attach grammar: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    $SRC := Services:ReadTextFile(
+        $ArgParse->Get("--source")
+    )
+        ~> R:IOError(
+            "Unable to read source: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    GLR:ParseSource(
+        Parser,
+        $SRC,
+        ParseResult
+    )
+        ~> R:ParseError(
+            "Parsing failed: ~s",
+            $E->Msg
+        )
+        -> R:DieGracefully(:EXIT_FAILURE)
+        ;
+
+    if $ArgParse->Has("--debug") then
+        GLR:PrintDiagnostics(ParseResult);
+    end
+
+    if not GLR:IsAccepted(ParseResult) then
+        GLR:PrintDiagnostics(ParseResult);
+        R:Exit(:EXIT_FAILURE);
+    end
+
+    if $ArgParse->Has("--ambiguities") then
+        GLR:ReportAmbiguities(ParseResult);
+    end
+
+    if $ArgParse->Has("--dump-tree") then
+        GLR:PrintSyntaxForest(ParseResult);
+    end
+
+    R:Print("Parsing completed successfully.\n");
+
+    R:Exit(:EXIT_SUCCESS);
+
+.end

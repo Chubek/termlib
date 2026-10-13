@@ -7,7 +7,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j
 ```
 
-CMake generates the Termscript parser from `termscript/Termscript.g` with `scripts/aurocks.pl`. The standard library is built from the sources in `third_party/tomlc99` and `third_party/isocline`.
+CMake generates the Termscript parser descriptor from `termscript/Termscript.ng` with the vendored NovoParse generator. The standard library is built from the sources in `third_party/tomlc99` and `third_party/isocline`.
 
 ## 2. Run Termscript
 
@@ -15,7 +15,7 @@ A Termscript program uses module calls such as `G:puts`:
 
 ```termscript
 const message = "hello from Termlib";
-G:puts message;
+G:puts(message);
 ```
 
 Run it with:
@@ -26,6 +26,13 @@ build/bin/termscript hello.ts
 
 The VM captures `G:puts` output and writes it to standard output through the driver.
 
+Both call forms are accepted in the current syntax:
+
+```termscript
+G:puts "legacy whitespace call";
+G:puts("parenthesized call");
+```
+
 ## 3. Generate and link C
 
 Emit C without compiling it:
@@ -33,6 +40,24 @@ Emit C without compiling it:
 ```sh
 build/bin/termscript -c -o hello.c hello.ts
 ```
+
+Backend flags:
+
+```sh
+# Explicit C backend (default for -c and -o):
+build/bin/termscript --backend c -c -o hello.c hello.ts
+build/bin/termscript --backend c -o hello hello.ts
+
+# QBE IL / native executable backend:
+build/bin/termscript --backend qbe -c -o hello.ssa hello.ts
+build/bin/termscript --backend qbe -o hello hello.ts
+
+# Jiterati execution backend:
+build/bin/termscript --backend jiterati hello.ts
+```
+
+`--cc CC` chooses the C compiler used for links.  `--static` applies to link
+steps.  Jiterati executes directly and rejects `-c`/`-o`.
 
 The generated source contains ordinary C control flow and calls to the compiled runtime. A typical static link uses:
 
