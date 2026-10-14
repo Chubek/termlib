@@ -196,7 +196,6 @@ static const TS_FuncDef pipe_funcs[] = {
   { "read", p_read, NULL },
   { "write", p_write, NULL },
   { "close", p_close, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_pipe_module = { "std.pipe", pipe_funcs };
+const TS_Module ts_std_pipe_module = TS_MODULE_INIT ("std.pipe", pipe_funcs);

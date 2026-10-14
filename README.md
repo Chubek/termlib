@@ -34,10 +34,12 @@ The public C API is declared in [`termlib.h`](termlib.h). Include [`termlib.hpp`
 
 ## Documentation
 
-The 22-chapter manual is in [`manual/`](manual/). Start with:
+The manual is in [`manual/`](manual/). Start with:
 
 - [GUIDE.md](GUIDE.md) — concepts, examples, and generated-C workflow.
 - [INSTALL.md](INSTALL.md) — dependencies, build options, and installation.
+- [Termscript Manual](manual/termscript.md) — language, CLI, modules, resources,
+  backends, embedding, and native extensions.
 - [manual/03-api-contracts.md](manual/03-api-contracts.md) — ownership and lifetime rules.
 - [manual/19-c-backend.md](manual/19-c-backend.md) — the Termscript C backend.
 

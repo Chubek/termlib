@@ -261,21 +261,108 @@ ts_vm_lookup (TS_VM *vm, const char *name)
 }
 
 TS_Status
-ts_vm_register_module (TS_VM *vm, const TS_Module *module, TS_Error *error)
+ts_module_validate (const TS_Module *module, TS_Error *error)
 {
-  size_t i;
-  if (!vm || !module || !module->name || !module->funcs)
+  size_t i, j;
+  if (!module)
     {
       ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad module");
       return TS_ERR_INVAL;
     }
-  for (i = 0; module->funcs[i].name; i++)
-    if (!module->funcs[i].func)
+  if (module->struct_size != sizeof *module ||
+      module->abi_version != TS_NATIVE_ABI_VERSION)
+    {
+      ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0,
+                    "incompatible native module ABI (size %u, version %u)",
+                    module->struct_size, module->abi_version);
+      return TS_ERR_UNSUPPORTED;
+    }
+  for (i = 0; i < sizeof module->reserved / sizeof module->reserved[0]; i++)
+    if (module->reserved[i])
       {
         ts_error_set (error, TS_ERR_INVAL, 0, 0,
-                      "module func '%s' is NULL", module->funcs[i].name);
+                      "native module reserved fields must be zero");
         return TS_ERR_INVAL;
       }
+  if (!module->name || !module->name[0] ||
+      (module->func_count && !module->funcs))
+    {
+      ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad module name or table");
+      return TS_ERR_INVAL;
+    }
+  if (module->func_count > TS_MAX_MODULE_FUNCS)
+    {
+      ts_error_set (error, TS_ERR_LIMIT, 0, 0,
+                    "module '%s' has too many functions", module->name);
+      return TS_ERR_LIMIT;
+    }
+  for (i = 0; i < module->func_count; i++)
+    {
+      const TS_FuncDef *f = &module->funcs[i];
+      if (!f->name || !f->name[0] || !f->func)
+        {
+          ts_error_set (error, TS_ERR_INVAL, 0, 0,
+                        "module '%s' has invalid function at index %zu",
+                        module->name, i);
+          return TS_ERR_INVAL;
+        }
+      for (j = 0; j < i; j++)
+        if (strcmp (module->funcs[j].name, f->name) == 0)
+          {
+            ts_error_set (error, TS_ERR_INVAL, 0, 0,
+                          "module '%s' has duplicate function '%s'",
+                          module->name, f->name);
+            return TS_ERR_INVAL;
+          }
+    }
+  return TS_OK;
+}
+
+void
+ts_module_init (TS_Module *module, const char *name,
+                const TS_FuncDef *funcs, size_t func_count)
+{
+  if (!module)
+    return;
+  memset (module, 0, sizeof *module);
+  module->struct_size = sizeof *module;
+  module->abi_version = TS_NATIVE_ABI_VERSION;
+  module->name = name;
+  module->funcs = funcs;
+  module->func_count = func_count;
+}
+
+uint32_t
+ts_native_abi_version (void)
+{
+  return TS_NATIVE_ABI_VERSION;
+}
+
+const TS_FuncDef *
+ts_module_find_func (const TS_Module *module, const char *name)
+{
+  size_t i;
+  if (!module || !name)
+    return NULL;
+  for (i = 0; i < module->func_count; i++)
+    if (strcmp (module->funcs[i].name, name) == 0)
+      return &module->funcs[i];
+  return NULL;
+}
+
+TS_Status
+ts_vm_register_module (TS_VM *vm, const TS_Module *module, TS_Error *error)
+{
+  size_t i;
+  TS_Status st;
+  if (!vm)
+    {
+      ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad vm");
+      return TS_ERR_INVAL;
+    }
+  st = ts_module_validate (module, error);
+  if (st != TS_OK)
+    return st;
   pthread_mutex_lock (&vm->mod_mutex);
   for (i = 0; i < vm->nmodules; i++)
     if (strcmp (vm->modules[i]->name, module->name) == 0)
@@ -850,10 +937,10 @@ static const TS_FuncDef g_funcs[] = {
   { "div", g_div, NULL }, { "mod", g_mod, NULL }, { "eq", g_eq, NULL },
   { "lt", g_lt, NULL }, { "gt", g_gt, NULL }, { "le", g_le, NULL }, { "ge", g_ge, NULL },
   { "not", g_not, NULL }, { "len", g_len, NULL }, { "concat", g_concat, NULL },
-  { "type", g_type, NULL }, { NULL, NULL, NULL }
+  { "type", g_type, NULL }
 };
 
-static const TS_Module g_module = { "G", g_funcs };
+static const TS_Module g_module = TS_MODULE_INIT ("G", g_funcs);
 
 /* ---------------- VM construction helpers ---------------- */
 
@@ -1882,7 +1969,7 @@ ts_call_with_handle (TS_VM *vm, const TS_Value *modval, const char *modname,
   TS_Handle *h;
   const TS_FuncDef *f = NULL;
   const TS_Module *mod = NULL;
-  size_t i;
+  TS_Status st;
   if (!modval || modval->type != TS_HANDLE ||
       !(h = modval->as.handle) || !(mod = ts_handle_module (h)))
     {
@@ -1890,12 +1977,7 @@ ts_call_with_handle (TS_VM *vm, const TS_Value *modval, const char *modname,
                   "module '%s' is not bound", modname ? modname : "?");
       return TS_ERR_NOTFOUND;
     }
-  for (i = 0; mod->funcs[i].name; i++)
-    if (strcmp (mod->funcs[i].name, func) == 0)
-      {
-        f = &mod->funcs[i];
-        break;
-      }
+  f = ts_module_find_func (mod, func);
   if (!f)
     {
       ts_error_set (error, TS_ERR_NOTFOUND, 0, line,
@@ -1904,7 +1986,10 @@ ts_call_with_handle (TS_VM *vm, const TS_Value *modval, const char *modname,
       return TS_ERR_NOTFOUND;
     }
   ret->type = TS_NIL;
-  return f->func (vm, f->userdata, argv, argc, ret, error);
+  st = f->func (vm, f->userdata, argv, argc, ret, error);
+  if (st != TS_OK)
+    ts_value_free (ret);
+  return st;
 }
 
 static TS_Status
@@ -2199,7 +2284,7 @@ ts_rt_call (TS_VM *vm, const TS_Value *mod, const char *modname,
             const char *func, const TS_Value *argv, size_t argc,
             TS_Value *ret, unsigned line, TS_Error *error)
 {
-  if (!vm || !mod || !func || !ret)
+  if (!vm || !mod || !func || !ret || (argc && !argv))
     {
       ts_error_set (error, TS_ERR_INVAL, 0, line, "bad call");
       return TS_ERR_INVAL;

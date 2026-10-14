@@ -1,5 +1,9 @@
 # Chapter 20: Standard Library
 
+For the current Termscript module catalogue, import semantics, and runnable
+examples, see the [Termscript Manual](termscript.md#6-standard-library) and
+[stdlib reference](../termscript/stdlib/README.md).
+
 Companion `.tsc` files are inlined only for constant imports. Native modules are linked and looked up through the registry.
 
 ## Scope

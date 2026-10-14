@@ -153,7 +153,6 @@ static const TS_FuncDef exec_funcs[] = {
   { "capture", e_capture, NULL },
   { "ok", e_ok, NULL },
   { "sh_escape", e_sh_escape, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_exec_module = { "std.exec", exec_funcs };
+const TS_Module ts_std_exec_module = TS_MODULE_INIT ("std.exec", exec_funcs);

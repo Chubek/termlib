@@ -4,8 +4,8 @@ These modules complement `std.pty`, `std.vterm`, `std.screen`, `std.font`,
 `std.utf8`, and `std.key` when emulator policy lives in Termscript and its
 renderer or platform integration lives in C.
 
-`G:import "x11"`, `G:import "drm"`, and `G:import "poll"` bind `x11_m`,
-`drm_m`, and `poll_m`. Alternatively use `G:load "std.x11"`, etc.
+`G:import("x11")`, `G:import("drm")`, and `G:import("poll")` bind `x11_m`,
+`drm_m`, and `poll_m`. Alternatively use `G:load("std.x11")`, etc.
 All three modules work in the VM, generated C, and the QBE native backend.
 
 ## Building
@@ -52,11 +52,11 @@ Normal timeout/empty-event conditions use the results described below.
 
 | Call | Result |
 |---|---|
-| `new` | Empty readiness-set handle |
-| `watch set fd mask` | Insert/update borrowed descriptor; true |
-| `remove set fd` | True if removed, false if absent |
-| `wait set timeout_ms` | Owned `std.list`: flat pairs `[fd, mask, fd, mask, ...]` |
-| `close set` | Clear watches and mark closed; nil; closes no descriptors |
+| `new()` | Empty readiness-set handle |
+| `watch(set, fd, mask)` | Insert/update borrowed descriptor; true |
+| `remove(set, fd)` | True if removed, false if absent |
+| `wait(set, timeout_ms)` | Owned `std.list`: flat pairs `[fd, mask, fd, mask, ...]` |
+| `close(set)` | Clear watches and mark closed; nil; closes no descriptors |
 
 Input masks: **1** readable, **2** writable, **3** both. Output additionally
 uses **4** hangup, **8** error, **16** invalid descriptor. Bits can combine:
@@ -79,15 +79,15 @@ The default visual must be TrueColor. Connections are close-on-exec.
 
 | Call | Result |
 |---|---|
-| `available` | Boolean build support |
-| `open title width height [display]` | Window; empty/omitted display uses `$DISPLAY` |
-| `fd window` | Borrowed connection fd |
-| `pending window` | Queued event count after checking the connection |
-| `event window` | Copied event document, or nil if none pending |
-| `fill window x y width height rgb` | Queue solid rectangle; nil |
-| `image window x y width height pixels` | Queue RGB image from `std.list`; nil |
-| `flush window` | Flush X requests; nil |
-| `close window` | Release GC/window/connection; nil |
+| `available()` | Boolean build support |
+| `open(title, width, height, display?)` | Window; empty/omitted display uses `$DISPLAY` |
+| `fd(window)` | Borrowed connection fd |
+| `pending(window)` | Queued event count after checking the connection |
+| `event(window)` | Copied event document, or nil if none pending |
+| `fill(window, x, y, width, height, rgb)` | Queue solid rectangle; nil |
+| `image(window, x, y, width, height, pixels)` | Queue RGB image from `std.list`; nil |
+| `flush(window)` | Flush X requests; nil |
+| `close(window)` | Release GC/window/connection; nil |
 
 RGB integers are `0..16777215` (`0xRRGGBB` in C). Image pixels are row-major
 and copied during the call; list length must equal width × height. Images are
@@ -95,7 +95,7 @@ bounded to 1,048,576 pixels. Dimensions are `1..32767`, coordinates
 `-32768..32767`, titles at most 4096 bytes. A host renderer can shape/rasterize
 glyph runs, compose RGB pixels, and upload them with `image`.
 
-Events are `std.json`-compatible documents. Use `J:get event "type"`, etc.
+Events are `std.json`-compatible documents. Use `J:get(event, "type")`, etc.
 Every event contains `type` (string) and `code` (X event number):
 
 | Type | Additional fields |
@@ -130,14 +130,14 @@ master acquisition, buffer allocation, and page flipping are host operations.
 
 | Call | Result |
 |---|---|
-| `available` | Boolean build support |
-| `open path` | Validated DRM handle: read/write, nonblocking, close-on-exec |
-| `from_fd fd` | Validated handle owning a close-on-exec duplicate |
-| `fd device` | Borrowed fd for host integration |
-| `driver device` | Copied kernel driver name |
-| `cap device name` | Integer value; nil if kernel query unsupported |
-| `connectors device` | Copied array document with connector/mode snapshots |
-| `close device` | Close owned fd; nil |
+| `available()` | Boolean build support |
+| `open(path)` | Validated DRM handle: read/write, nonblocking, close-on-exec |
+| `from_fd(fd)` | Validated handle owning a close-on-exec duplicate |
+| `fd(device)` | Borrowed fd for host integration |
+| `driver(device)` | Copied kernel driver name |
+| `cap(device, name)` | Integer value; nil if kernel query unsupported |
+| `connectors(device)` | Copied array document with connector/mode snapshots |
+| `close(device)` | Close owned fd; nil |
 
 Capabilities: `dumb_buffer`, `prime`, `timestamp_monotonic`, `async_page_flip`.
 Unknown names are argument errors; prime returns the kernel capability bitmask.
@@ -145,7 +145,7 @@ Unknown names are argument errors; prime returns the kernel capability bitmask.
 Connectors contain `id`, numeric DRM `type`, `type_id`, `encoder`, `connected`,
 `width_mm`, `height_mm`, and `modes`. Modes have `name`, `width`, `height`,
 `refresh_hz`, and `preferred`. Navigate with e.g.
-`J:get snapshot "0.modes.0.width"`. Limits: 256 connectors, 4096 modes each.
+`J:get(snapshot, "0.modes.0.width")`. Limits: 256 connectors, 4096 modes each.
 Re-query after hotplug. Disappearance during a query reports an error rather
 than a partial snapshot. KMS discovery generally needs a primary `cardN` node;
 render nodes may reject it.

@@ -518,6 +518,6 @@ static const TS_FuncDef funcs[] = {
   {"cursor", vt_get, (void *) 2}, {"cell", vt_get, (void *) 3},
   {"reset", vt_get, (void *) 4}, {"cursor_visible", vt_get, (void *) 5},
   {"rows", vt_get, (void *) 6}, {"cols", vt_get, (void *) 7},
-  {"resize", vt_resize, NULL}, {NULL, NULL, NULL}
+  {"resize", vt_resize, NULL}
 };
-const TS_Module ts_std_vterm_module = {"std.vterm", funcs};
+const TS_Module ts_std_vterm_module = TS_MODULE_INIT ("std.vterm", funcs);

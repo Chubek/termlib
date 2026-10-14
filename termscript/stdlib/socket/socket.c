@@ -353,7 +353,6 @@ static const TS_FuncDef socket_funcs[] = {
   { "close", s_close, NULL },
   { "fd", s_options, NULL }, { "set_timeout", s_options, (void *) 1 },
   { "nonblocking", s_options, (void *) 2 },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_socket_module = { "std.socket", socket_funcs };
+const TS_Module ts_std_socket_module = TS_MODULE_INIT ("std.socket", socket_funcs);

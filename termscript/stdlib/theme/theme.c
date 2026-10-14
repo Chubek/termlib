@@ -218,7 +218,6 @@ static const TS_FuncDef theme_funcs[] = {
   { "fg", t_fg, NULL },
   { "bg", t_bg, NULL },
   { "roles", t_roles, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_theme_module = { "std.theme", theme_funcs };
+const TS_Module ts_std_theme_module = TS_MODULE_INIT ("std.theme", theme_funcs);

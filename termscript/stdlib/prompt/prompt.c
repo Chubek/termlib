@@ -158,7 +158,6 @@ static const TS_FuncDef prompt_funcs[] = {
   { "set_primary", p_set, NULL },
   { "set_continuation", p_set, (void *) 1 },
   { "width", p_width, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_prompt_module = { "std.prompt", prompt_funcs };
+const TS_Module ts_std_prompt_module = TS_MODULE_INIT ("std.prompt", prompt_funcs);

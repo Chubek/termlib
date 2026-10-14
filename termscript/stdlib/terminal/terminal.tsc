@@ -1,2 +1,2 @@
 # Descriptor-owning terminal sessions and pure terminal-control builders.
-const terminal_m = G:load "std.terminal" or G:die "std.terminal missing";
+const terminal_m = G:load("std.terminal") or G:die("std.terminal missing");

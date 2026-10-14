@@ -1,10 +1,10 @@
 # Adjust the node for the local machine, or use from_fd for a host-provided fd.
-const D = G:load "std.drm";
-const J = G:load "std.json";
-const device = D:open "/dev/dri/card1";
-const driver = D:driver device;
-G:puts driver;
-const connectors = D:connectors device;
-const text = J:stringify connectors;
-G:puts text;
-D:close device;
+const D = G:load("std.drm");
+const J = G:load("std.json");
+const device = D:open("/dev/dri/card1");
+const driver = D:driver(device);
+G:puts(driver);
+const connectors = D:connectors(device);
+const text = J:stringify(connectors);
+G:puts(text);
+D:close(device);

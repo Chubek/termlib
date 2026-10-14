@@ -243,7 +243,6 @@ static const TS_FuncDef syntax_funcs[] = {
   { "highlight", s_highlight, NULL },
   { "langs", s_langs, NULL },
   { "keyword", s_keyword, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_syntax_module = { "std.syntax", syntax_funcs };
+const TS_Module ts_std_syntax_module = TS_MODULE_INIT ("std.syntax", syntax_funcs);

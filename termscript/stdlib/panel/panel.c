@@ -193,7 +193,6 @@ oom:
 static const TS_FuncDef panel_funcs[] = {
   { "box", p_box, NULL },
   { "columns", p_columns, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_panel_module = { "std.panel", panel_funcs };
+const TS_Module ts_std_panel_module = TS_MODULE_INIT ("std.panel", panel_funcs);

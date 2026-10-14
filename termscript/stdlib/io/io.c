@@ -272,7 +272,6 @@ static const TS_FuncDef io_funcs[] = {
   { "mkdir", i_mkdir, NULL },
   { "lines", i_lines, NULL },
   { "stderr", i_stderr, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_io_module = { "std.io", io_funcs };
+const TS_Module ts_std_io_module = TS_MODULE_INIT ("std.io", io_funcs);

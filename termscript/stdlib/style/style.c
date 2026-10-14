@@ -181,7 +181,6 @@ static const TS_FuncDef style_funcs[] = {
   { "strip", s_strip, NULL },
   { "vislen", s_vislen, NULL },
   { "pad", s_pad, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_style_module = { "std.style", style_funcs };
+const TS_Module ts_std_style_module = TS_MODULE_INIT ("std.style", style_funcs);

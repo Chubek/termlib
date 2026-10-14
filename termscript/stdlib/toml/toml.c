@@ -119,7 +119,6 @@ static const TS_FuncDef toml_funcs[] = {
   { "get", t_get, NULL },
   { "len", t_len, NULL },
   { "stringify", t_stringify, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_toml_module = { "std.toml", toml_funcs };
+const TS_Module ts_std_toml_module = TS_MODULE_INIT ("std.toml", toml_funcs);

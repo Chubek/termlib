@@ -1,5 +1,8 @@
 # Chapter 17: Termscript Language
 
+For the complete user and embedding reference, see the
+[Termscript Manual](termscript.md).
+
 Termscript is parsed from `termscript/Termscript.ng` by the vendored
 NovoParse/GLR pipeline.  This chapter describes the shipped executable syntax:
 the subset accepted by that grammar and lowered through the shared AST used by

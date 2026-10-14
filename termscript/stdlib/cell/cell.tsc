@@ -1,2 +1,2 @@
 # Styled Unicode grapheme snapshots, shared by screen, vterm and tui.
-const cell_m = G:load "std.cell" or G:die "std.cell missing";
+const cell_m = G:load("std.cell") or G:die("std.cell missing");

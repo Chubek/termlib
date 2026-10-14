@@ -186,6 +186,6 @@ d_available (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *r, TS_E
 static const TS_FuncDef funcs[] = {
   {"available", d_available, NULL}, {"open", d_open, NULL}, {"from_fd", d_open, (void *) 1},
   {"close", d_state, (void *) 0}, {"fd", d_state, (void *) 1}, {"driver", d_state, (void *) 2},
-  {"cap", d_cap, NULL}, {"connectors", d_connectors, NULL}, {NULL, NULL, NULL}
+  {"cap", d_cap, NULL}, {"connectors", d_connectors, NULL}
 };
-const TS_Module ts_std_drm_module = {"std.drm", funcs};
+const TS_Module ts_std_drm_module = TS_MODULE_INIT ("std.drm", funcs);

@@ -213,7 +213,6 @@ static const TS_FuncDef fsm_funcs[] = {
   { "send", f_send, NULL },
   { "state", f_state, NULL },
   { "reset", f_reset, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_fsm_module = { "std.fsm", fsm_funcs };
+const TS_Module ts_std_fsm_module = TS_MODULE_INIT ("std.fsm", fsm_funcs);

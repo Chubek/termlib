@@ -238,7 +238,6 @@ static const TS_FuncDef log_funcs[] = {
   { "sinfo", l_sinfo, NULL },
   { "swarn", l_swarn, NULL },
   { "serror", l_serror, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_log_module = { "std.log", log_funcs };
+const TS_Module ts_std_log_module = TS_MODULE_INIT ("std.log", log_funcs);

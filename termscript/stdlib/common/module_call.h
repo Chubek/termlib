@@ -13,8 +13,8 @@ ts_module_call (TS_VM *vm, const TS_Module *m, const char *name,
                 const TS_Value *a, size_t n, TS_Value *r, TS_Error *e)
 {
   ts_value_free (r);
-  for (const TS_FuncDef *f = m->funcs; f->name; f++)
-    if (!strcmp (f->name, name)) return f->func (vm, f->userdata, a, n, r, e);
+  const TS_FuncDef *f = ts_module_find_func (m, name);
+  if (f) return f->func (vm, f->userdata, a, n, r, e);
   return ts_std_inval (e, "internal module entry not found");
 }
 static inline int64_t ts_doc_int (const ts_dom_t *d, const char *key)

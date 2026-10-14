@@ -233,7 +233,6 @@ static const TS_FuncDef array_funcs[] = {
   { "len", a_len, NULL },
   { "sum", a_sum, NULL },
   { "fill", a_fill, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_array_module = { "std.array", array_funcs };
+const TS_Module ts_std_array_module = TS_MODULE_INIT ("std.array", array_funcs);

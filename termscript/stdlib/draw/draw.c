@@ -242,7 +242,6 @@ static const TS_FuncDef draw_funcs[] = {
   { "bar", d_bar, NULL },
   { "progress", d_progress, NULL },
   { "center", d_center, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_draw_module = { "std.draw", draw_funcs };
+const TS_Module ts_std_draw_module = TS_MODULE_INIT ("std.draw", draw_funcs);

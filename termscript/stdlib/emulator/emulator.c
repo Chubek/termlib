@@ -319,6 +319,6 @@ static const TS_FuncDef funcs[] = {
   {"close", e_state, NULL}, {"surface", e_state, (void *) 1},
   {"text", e_state, (void *) 2}, {"fd", e_state, (void *) 3},
   {"status", e_state, (void *) 4}, {"wait", e_state, (void *) 5},
-  {"pending", e_state, (void *) 6}, {NULL, NULL, NULL}
+  {"pending", e_state, (void *) 6}
 };
-const TS_Module ts_std_emulator_module = {"std.emulator", funcs};
+const TS_Module ts_std_emulator_module = TS_MODULE_INIT ("std.emulator", funcs);

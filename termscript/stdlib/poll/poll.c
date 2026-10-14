@@ -108,6 +108,6 @@ p_wait (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *r, TS_Error 
 static const TS_FuncDef funcs[] = {
   {"new", p_new, NULL}, {"watch", p_edit, (void *) 0},
   {"remove", p_edit, (void *) 1}, {"close", p_edit, (void *) 2},
-  {"wait", p_wait, NULL}, {NULL, NULL, NULL}
+  {"wait", p_wait, NULL}
 };
-const TS_Module ts_std_poll_module = {"std.poll", funcs};
+const TS_Module ts_std_poll_module = TS_MODULE_INIT ("std.poll", funcs);

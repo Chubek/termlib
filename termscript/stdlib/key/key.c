@@ -180,7 +180,6 @@ static const TS_FuncDef key_funcs[] = {
   { "encode", k_encode, NULL },
   { "is_esc", k_is_esc, NULL },
   { "event", k_event, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_key_module = { "std.key", key_funcs };
+const TS_Module ts_std_key_module = TS_MODULE_INIT ("std.key", key_funcs);

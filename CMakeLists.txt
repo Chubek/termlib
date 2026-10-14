@@ -221,6 +221,7 @@ install(DIRECTORY manual/
 )
 add_custom_target(termlib-manual
   SOURCES README.md GUIDE.md INSTALL.md
+          ${CMAKE_CURRENT_SOURCE_DIR}/manual/termscript.md
           ${CMAKE_CURRENT_SOURCE_DIR}/manual/01-overview.md
           ${CMAKE_CURRENT_SOURCE_DIR}/manual/22-portability-testing.md
 )
@@ -239,6 +240,12 @@ if(BUILD_TESTING)
   add_executable(test_termlib_cpp tests/test_termlib_cpp.cpp)
   target_link_libraries(test_termlib_cpp PRIVATE termscript)
   add_test(NAME termlib_cpp COMMAND test_termlib_cpp)
+  add_executable(test_termscript_abi tests/test_termscript_abi.c)
+  target_link_libraries(test_termscript_abi PRIVATE termscript_standalone)
+  if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_termscript_abi PRIVATE -Wall -Wextra)
+  endif()
+  add_test(NAME termscript_abi COMMAND test_termscript_abi)
   if(TARGET termscript_stdlib)
     add_executable(test_termscript_emulator tests/test_termscript_emulator.c)
     add_executable(test_termscript_compositor tests/test_termscript_compositor.c)
@@ -275,6 +282,14 @@ if(BUILD_TESTING)
     target_compile_definitions(test_termscript_stdlib PRIVATE _GNU_SOURCE)
     target_link_libraries(test_termscript_stdlib PRIVATE termscript_stdlib)
     add_test(NAME termscript_stdlib COMMAND test_termscript_stdlib)
+    add_test(NAME termscript_companions_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSTDLIB=${CMAKE_CURRENT_SOURCE_DIR}/termscript/stdlib
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/companion-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE}
+      -DJITERATI=${TERMSCRIPT_JITERATI}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_companions.cmake)
+    set_tests_properties(termscript_companions_backends PROPERTIES TIMEOUT 120)
     add_executable(test_termscript_shell tests/test_termscript_shell.c)
     target_compile_definitions(test_termscript_shell PRIVATE _GNU_SOURCE)
     target_link_libraries(test_termscript_shell PRIVATE termscript_stdlib)

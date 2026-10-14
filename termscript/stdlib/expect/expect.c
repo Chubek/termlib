@@ -290,7 +290,6 @@ static const TS_FuncDef expect_funcs[] = {
   { "expect", e_expect, NULL },
   { "send", e_send, NULL },
   { "close", e_close, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_expect_module = { "std.expect", expect_funcs };
+const TS_Module ts_std_expect_module = TS_MODULE_INIT ("std.expect", expect_funcs);

@@ -117,7 +117,6 @@ static const TS_FuncDef yaml_funcs[] = {
   { "get", y_get, NULL },
   { "len", y_len, NULL },
   { "stringify", y_stringify, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_yaml_module = { "std.yaml", yaml_funcs };
+const TS_Module ts_std_yaml_module = TS_MODULE_INIT ("std.yaml", yaml_funcs);

@@ -290,7 +290,7 @@ dt_wrap_module (const DT_TermModule *mod)
   while (mod->funcs[n].name)
     n++;
   wrap = malloc (sizeof *wrap);
-  funcs = malloc ((n + 1) * sizeof *funcs);
+  funcs = malloc ((n ? n : 1) * sizeof *funcs);
   if (!wrap || !funcs)
     {
       free (wrap);
@@ -303,11 +303,7 @@ dt_wrap_module (const DT_TermModule *mod)
       funcs[n].func = dt_trampoline;
       funcs[n].userdata = (void *) &mod->funcs[n];
     }
-  funcs[n].name = NULL;
-  funcs[n].func = NULL;
-  funcs[n].userdata = NULL;
-  wrap->name = mod->name;
-  wrap->funcs = funcs;
+  ts_module_init (wrap, mod->name, funcs, n);
   return wrap;
 }
 
@@ -681,10 +677,10 @@ ti_compile_to_ti (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
 static const TS_FuncDef ti_funcs[] = {
   { "load", ti_load, NULL }, { "get", ti_get, NULL },
   { "expand", ti_expand, NULL },
-  { "compile_to_ti", ti_compile_to_ti, NULL }, { NULL, NULL, NULL }
+  { "compile_to_ti", ti_compile_to_ti, NULL }
 };
 
-static const TS_Module ti_module = { "std.terminfo", ti_funcs };
+static const TS_Module ti_module = TS_MODULE_INIT ("std.terminfo", ti_funcs);
 
 /* ---------------- DT VM lifetime ---------------- */
 

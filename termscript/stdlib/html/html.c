@@ -227,6 +227,6 @@ static const TS_FuncDef funcs[] = {
   {"text", h_get, NULL}, {"serialize", h_get, (void *) 1}, {"tag", h_get, (void *) 2},
   {"parent", h_get, (void *) 3}, {"children", h_get, (void *) 4}, {"body", h_get, (void *) 5},
   {"attr", h_attr, NULL}, {"set_attr", h_attr, (void *) 1}, {"escape", h_escape, NULL},
-  {"render", h_render, NULL}, {NULL, NULL, NULL}
+  {"render", h_render, NULL}
 };
-const TS_Module ts_std_html_module = {"std.html", funcs};
+const TS_Module ts_std_html_module = TS_MODULE_INIT ("std.html", funcs);

@@ -32,9 +32,8 @@ invoke (const char *function, TS_Value *ret, size_t argc, ...)
   for (size_t i = 0; i < argc; i++) args[i] = va_arg (ap, TS_Value);
   va_end (ap);
   ts_value_free (ret); ts_error_clear (&error);
-  for (const TS_FuncDef *f = ts_std_shell_module.funcs; f->name; f++)
-    if (!strcmp (f->name, function))
-      return f->func (vm, f->userdata, args, argc, ret, &error);
+  const TS_FuncDef *f = ts_module_find_func (&ts_std_shell_module, function);
+  if (f) return f->func (vm, f->userdata, args, argc, ret, &error);
   CHECK (0); return TS_ERR_NOTFOUND;
 }
 #define OK(...) do { TS_Status st_ = invoke (__VA_ARGS__); if (st_) { fprintf (stderr, "%s:%d: %s\n", __FILE__, __LINE__, error.message); exit (1); } } while (0)

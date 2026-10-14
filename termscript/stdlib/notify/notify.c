@@ -146,7 +146,6 @@ static const TS_FuncDef notify_funcs[] = {
   { "title", n_title, NULL },
   { "flash", n_flash, NULL },
   { "toast", n_toast, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_notify_module = { "std.notify", notify_funcs };
+const TS_Module ts_std_notify_module = TS_MODULE_INIT ("std.notify", notify_funcs);

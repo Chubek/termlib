@@ -1,1 +1,1 @@
-const font_discovery_m = G:load "std.font_discovery" or G:die "std.font_discovery missing";
+const font_discovery_m = G:load("std.font_discovery") or G:die("std.font_discovery missing");

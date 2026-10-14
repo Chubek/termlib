@@ -125,7 +125,6 @@ static const TS_FuncDef signal_funcs[] = {
   { "name", s_name, NULL },
   { "num", s_num, NULL },
   { "self", s_self, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_signal_module = { "std.signal", signal_funcs };
+const TS_Module ts_std_signal_module = TS_MODULE_INIT ("std.signal", signal_funcs);

@@ -236,6 +236,5 @@ static const TS_FuncDef funcs[] = {
   {"close", x_state, (void *) 0}, {"fd", x_state, (void *) 1},
   {"flush", x_state, (void *) 2}, {"pending", x_state, (void *) 3},
   {"event", x_event, NULL}, {"fill", x_draw, (void *) 0}, {"image", x_draw, (void *) 1},
-  {NULL, NULL, NULL}
 };
-const TS_Module ts_std_x11_module = {"std.x11", funcs};
+const TS_Module ts_std_x11_module = TS_MODULE_INIT ("std.x11", funcs);

@@ -5,13 +5,15 @@ The emulator combines `std.compositor`, `std.pty`, `std.vterm`, `std.font`, and
 optionally a nonblocking PTY child. It can also render host-fed terminal output
 without spawning a process.
 
+**Illustrative:** requires an X11 display and an interactive shell session.
+
 ```termscript
-G:import "compositor";
-G:import "emulator";
-const output = compositor_m:new 800 480 "Termscript terminal";
-const terminal = emulator_m:new output 30 100;
-emulator_m:spawn terminal "exec /bin/sh";
-# Call emulator_m:step terminal timeout_ms in the application event loop.
+G:import("compositor");
+G:import("emulator");
+const output = compositor_m:new(800, 480, "Termscript terminal");
+const terminal = emulator_m:new(output, 30, 100);
+emulator_m:spawn(terminal, "exec /bin/sh");
+# Call emulator_m:step(terminal, timeout_ms) in the application event loop.
 ```
 
 See [`terminal.tsc`](terminal.tsc) for a complete windowed example and
@@ -22,22 +24,22 @@ a VT screen. Both can run under the VM or be compiled with the C/QBE backends.
 
 | Call | Result / behavior |
 |---|---|
-| `new compositor rows cols [font [cell_width cell_height]]` | Owned emulator; default monospace, 8×16 pixels |
-| `surface emulator` | Retained alias to the emulator's compositor surface |
-| `spawn emulator command` | Spawn `/bin/sh -c command` with initial PTY geometry; nil |
-| `feed emulator text` | Feed terminal output directly into VT parser; byte count |
-| `input emulator text` | Copy UTF-8/input bytes into the PTY input queue; byte count accepted |
-| `pump emulator [timeout_ms]` | Service nonblocking PTY input/output; count of output bytes read |
-| `render emulator` | Rasterize changed VT screen and commit the surface; nil |
-| `resize emulator rows cols` | Update VT/surface geometry and PTY size; nil |
-| `handle emulator event` | Translate a routed key press for this surface; true if queued |
-| `step emulator timeout_ms` | Single-terminal event/pump/render/present convenience; event or nil |
-| `text emulator` | Owned plain-text screen snapshot |
-| `fd emulator` | Borrowed PTY master fd, -1 before spawn |
-| `status emulator` | `idle`, `running`, or `eof`; independent of child exit status |
-| `wait emulator` | Owned child-state document, or nil if no update/child |
-| `pending emulator` | Number of queued unsent input bytes |
-| `close emulator` | Destroy surface, terminate/reap live child, release resources; idempotent |
+| `new(compositor, rows, cols, font?, cell_width?, cell_height?)` | Owned emulator; default monospace, 8×16 pixels |
+| `surface(emulator)` | Retained alias to the emulator's compositor surface |
+| `spawn(emulator, command)` | Spawn `/bin/sh -c command` with initial PTY geometry; nil |
+| `feed(emulator, text)` | Feed terminal output directly into VT parser; byte count |
+| `input(emulator, text)` | Copy UTF-8/input bytes into the PTY input queue; byte count accepted |
+| `pump(emulator, timeout_ms?)` | Service nonblocking PTY input/output; count of output bytes read |
+| `render(emulator)` | Rasterize changed VT screen and commit the surface; nil |
+| `resize(emulator, rows, cols)` | Update VT/surface geometry and PTY size; nil |
+| `handle(emulator, event)` | Translate a routed key press for this surface; true if queued |
+| `step(emulator, timeout_ms)` | Single-terminal event/pump/render/present convenience; event or nil |
+| `text(emulator)` | Owned plain-text screen snapshot |
+| `fd(emulator)` | Borrowed PTY master fd, -1 before spawn |
+| `status(emulator)` | `idle`, `running`, or `eof`; independent of child exit status |
+| `wait(emulator)` | Owned child-state document, or nil if no update/child |
+| `pending(emulator)` | Number of queued unsent input bytes |
+| `close(emulator)` | Destroy surface, terminate/reap live child, release resources; idempotent |
 
 Font is a Fontconfig pattern. Cell dimensions are 4..256 pixels. Total surface
 pixels cannot exceed 8,388,608, and pixel width/height cannot exceed 32767.
@@ -65,11 +67,11 @@ the emulator or shared compositor.
 
 For multiple terminals, control the loop explicitly:
 
-1. `C:event compositor timeout` obtains an output/input/readiness event.
-2. Dispatch `E:handle terminal event` to each terminal; only the focused target
+1. `C:event(compositor, timeout)` obtains an output/input/readiness event.
+2. Dispatch `E:handle(terminal, event)` to each terminal; only the focused target
    accepts key presses. Manage layout and call `E:resize` yourself.
-3. Call `E:pump terminal 0` and `E:render terminal` for each terminal.
-4. Call `C:present compositor` once.
+3. Call `E:pump(terminal, 0)` and `E:render(terminal)` for each terminal.
+4. Call `C:present(compositor)` once.
 
 PTY fds are automatically registered with the compositor's poll set at spawn
 and removed at EOF/close. Rendering a terminal commits its own surface but does

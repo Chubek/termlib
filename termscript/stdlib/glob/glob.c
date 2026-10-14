@@ -141,7 +141,6 @@ static const TS_FuncDef glob_funcs[] = {
   { "match", g_match, NULL },
   { "glob", g_glob, NULL },
   { "quote", g_quote, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_glob_module = { "std.glob", glob_funcs };
+const TS_Module ts_std_glob_module = TS_MODULE_INIT ("std.glob", glob_funcs);

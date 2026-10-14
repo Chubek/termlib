@@ -122,6 +122,5 @@ oom: ts_sbuf_free (&clipped); ts_sbuf_free (&b); return ts_std_oom (e);
 static const TS_FuncDef funcs[] = {
   {"rect", l_rect, NULL}, {"get", l_get, NULL}, {"contains", l_get, (void *) 1},
   {"inset", l_inset, NULL}, {"split", l_split, NULL}, {"align", l_align, NULL}, {"fit", l_align, NULL},
-  {NULL, NULL, NULL}
 };
-const TS_Module ts_std_layout_module = {"std.layout", funcs};
+const TS_Module ts_std_layout_module = TS_MODULE_INIT ("std.layout", funcs);

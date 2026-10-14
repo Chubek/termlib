@@ -1,33 +1,33 @@
 # Minimal window/event-loop example. Close the window to exit.
-G:import "x11";
-G:import "poll";
-const J = G:load "std.json";
-const available = x11_m:available;
+G:import("x11");
+G:import("poll");
+const J = G:load("std.json");
+const available = x11_m:available();
 if available do
-  const window = x11_m:open "Termscript front end" 640 400;
-  const ready = poll_m:new;
-  const fd = x11_m:fd window;
-  poll_m:watch ready fd 1;
+  const window = x11_m:open("Termscript front end", 640, 400);
+  const ready = poll_m:new();
+  const fd = x11_m:fd(window);
+  poll_m:watch(ready, fd, 1);
   running = true;
   while running do
     # Drain Xlib's own queue before waiting on the socket.
-    event = x11_m:event window;
+    event = x11_m:event(window);
     while event do
-      kind = J:get event "type";
-      if G:eq kind "close" do running = false; end
-      if G:eq kind "destroy" do running = false; end
-      if G:eq kind "expose" do
-        x11_m:fill window 0 0 640 400 1056816;
-        x11_m:fill window 16 16 8 20 16777215;
-        x11_m:flush window;
+      kind = J:get(event, "type");
+      if G:eq(kind, "close") do running = false; end
+      if G:eq(kind, "destroy") do running = false; end
+      if G:eq(kind, "expose") do
+        x11_m:fill(window, 0, 0, 640, 400, 1056816);
+        x11_m:fill(window, 16, 16, 8, 20, 16777215);
+        x11_m:flush(window);
       end
-      if running do event = x11_m:event window; else event = nil; end
+      if running do event = x11_m:event(window); else event = nil; end
     end
-    if running do poll_m:wait ready 100; end
+    if running do poll_m:wait(ready, 100); end
   end
-  poll_m:remove ready fd;
-  poll_m:close ready;
-  x11_m:close window;
+  poll_m:remove(ready, fd);
+  poll_m:close(ready);
+  x11_m:close(window);
 else
-  G:die "This build has no Xlib support";
+  G:die("This build has no Xlib support");
 end

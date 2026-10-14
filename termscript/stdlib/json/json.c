@@ -122,7 +122,6 @@ static const TS_FuncDef json_funcs[] = {
   { "get", j_get, NULL },
   { "len", j_len, NULL },
   { "stringify", j_stringify, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_json_module = { "std.json", json_funcs };
+const TS_Module ts_std_json_module = TS_MODULE_INIT ("std.json", json_funcs);

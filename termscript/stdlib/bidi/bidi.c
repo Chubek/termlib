@@ -104,6 +104,6 @@ static const TS_FuncDef funcs[] = {
   {"visual", b_convert, NULL}, {"persian", b_convert, NULL},
   {"reorder", b_convert, (void *) 1}, {"direction", b_convert, (void *) 2},
   {"levels", b_convert, (void *) 3}, {"logical_to_visual", b_convert, (void *) 4},
-  {"visual_to_logical", b_convert, (void *) 5}, {NULL, NULL, NULL}
+  {"visual_to_logical", b_convert, (void *) 5}
 };
-const TS_Module ts_std_bidi_module = {"std.bidi", funcs};
+const TS_Module ts_std_bidi_module = TS_MODULE_INIT ("std.bidi", funcs);

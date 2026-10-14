@@ -121,6 +121,6 @@ oom: ts_sbuf_free (&b); return ts_std_oom (e);
 
 static const TS_FuncDef funcs[] = {
   {"expand", p_expand, NULL}, {"width", p_text, NULL}, {"strip", p_text, (void *) 1},
-  {"readline", p_text, (void *) 2}, {NULL, NULL, NULL}
+  {"readline", p_text, (void *) 2}
 };
-const TS_Module ts_std_prompt_string_module = {"std.prompt_string", funcs};
+const TS_Module ts_std_prompt_string_module = TS_MODULE_INIT ("std.prompt_string", funcs);

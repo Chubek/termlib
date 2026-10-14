@@ -179,7 +179,6 @@ static const TS_FuncDef terminfo_funcs[] = {
   { "names", t_names, NULL },
   { "rows", t_rows, NULL },
   { "cols", t_cols, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_terminfo_module = { "std.tinfo", terminfo_funcs };
+const TS_Module ts_std_terminfo_module = TS_MODULE_INIT ("std.tinfo", terminfo_funcs);

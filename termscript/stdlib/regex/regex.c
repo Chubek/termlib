@@ -214,7 +214,6 @@ static const TS_FuncDef regex_funcs[] = {
   { "find", r_find, NULL },
   { "count", r_count, NULL },
   { "replace", r_replace, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_regex_module = { "std.regex", regex_funcs };
+const TS_Module ts_std_regex_module = TS_MODULE_INIT ("std.regex", regex_funcs);

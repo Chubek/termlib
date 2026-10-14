@@ -7,15 +7,18 @@ into a headless framebuffer or a nested X11 window. `std.drm` supplies discovery
 for an embedding host's KMS output integration; this module does not take DRM
 master or perform modesetting.
 
+**Illustrative:** requires an X11 display. Headless composition is covered by
+the compositor regression tests.
+
 ```termscript
-G:import "compositor";
+G:import("compositor");
 const C = compositor_m;
-const output = C:new 640 480 "My compositor";
-const surface = C:surface output 100 50;
-C:fill surface 4294901760; # opaque red, ARGB 0xffff0000
-C:position surface 20 30;
-C:commit surface;
-const serial = C:present output;
+const output = C:new(640, 480, "My compositor");
+const surface = C:surface(output, 100, 50);
+C:fill(surface, 4294901760); # opaque red, ARGB 0xffff0000
+C:position(surface, 20, 30);
+C:commit(surface);
+const serial = C:present(output);
 ```
 
 Omit the title for headless operation. The module uses `std.x11` for the nested
@@ -26,28 +29,28 @@ connector snapshots. No additional external dependency is introduced.
 
 | Call | Result / behavior |
 |---|---|
-| `new width height [title]` | Owned compositor handle; optional title selects X11 |
-| `surface compositor width height` | Owned, initially unmapped surface handle |
-| `id surface` | Stable positive ID, unique within its compositor; never reused |
-| `attach surface pixels` | Copy a row-major `std.list` of straight-alpha ARGB integers |
-| `fill surface argb` | Stage a uniform ARGB buffer |
-| `position surface x y` | Stage a surface position |
-| `resize surface width height` | Stage new dimensions and a transparent buffer |
-| `commit surface` | Publish pending pixels, dimensions, and position together |
-| `raise surface` | Immediately move surface to the top of the stack |
-| `destroy surface` | Unmap/remove surface and release its buffers; idempotent |
-| `focus compositor surface` | Set keyboard focus; nil clears focus |
-| `present compositor` | Compose committed state and flush output; return frame serial |
-| `frame compositor` | Owned RGB pixel-list snapshot of the most recent composition |
-| `damage compositor` | Request a repaint without changing surface state |
-| `output_size compositor width height` | Resize logical framebuffer; does not resize the X window |
-| `info compositor` | Owned document: width, height, surfaces, serial, focus, backend |
-| `event compositor timeout_ms` | One owned routed event document, or nil on timeout |
-| `inject compositor event` | Copy an event document into the bounded input queue |
-| `watch compositor fd mask` | Borrow an external fd and register read/write interest |
-| `unwatch compositor fd` | Remove external watch; return whether it existed |
-| `outputs drm_device` | Connector/mode snapshot through `std.drm.connectors` |
-| `close compositor` | Invalidate surfaces, release output, watches, buffers; idempotent |
+| `new(width, height, title?)` | Owned compositor handle; optional title selects X11 |
+| `surface(compositor, width, height)` | Owned, initially unmapped surface handle |
+| `id(surface)` | Stable positive ID, unique within its compositor; never reused |
+| `attach(surface, pixels)` | Copy a row-major `std.list` of straight-alpha ARGB integers |
+| `fill(surface, argb)` | Stage a uniform ARGB buffer |
+| `position(surface, x, y)` | Stage a surface position |
+| `resize(surface, width, height)` | Stage new dimensions and a transparent buffer |
+| `commit(surface)` | Publish pending pixels, dimensions, and position together |
+| `raise(surface)` | Immediately move surface to the top of the stack |
+| `destroy(surface)` | Unmap/remove surface and release its buffers; idempotent |
+| `focus(compositor, surface)` | Set keyboard focus; nil clears focus |
+| `present(compositor)` | Compose committed state and flush output; return frame serial |
+| `frame(compositor)` | Owned RGB pixel-list snapshot of the most recent composition |
+| `damage(compositor)` | Request a repaint without changing surface state |
+| `output_size(compositor, width, height)` | Resize logical framebuffer; does not resize the X window |
+| `info(compositor)` | Owned document: width, height, surfaces, serial, focus, backend |
+| `event(compositor, timeout_ms)` | One owned routed event document, or nil on timeout |
+| `inject(compositor, event)` | Copy an event document into the bounded input queue |
+| `watch(compositor, fd, mask)` | Borrow an external fd and register read/write interest |
+| `unwatch(compositor, fd)` | Remove external watch; return whether it existed |
+| `outputs(drm_device)` | Connector/mode snapshot through `std.drm.connectors` |
+| `close(compositor)` | Invalidate surfaces, release output, watches, buffers; idempotent |
 
 Mutating operations otherwise return nil (`watch` returns true). ARGB is
 `0xAARRGGBB` in C, represented as a nonnegative integer up to 4294967295 in

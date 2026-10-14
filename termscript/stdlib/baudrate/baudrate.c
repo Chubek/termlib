@@ -129,6 +129,6 @@ b_speed (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Err
 
 static const TS_FuncDef funcs[] = {
   {"supported", b_supported, NULL}, {"rates", b_list, NULL},
-  {"get", b_speed, NULL}, {"set", b_speed, (void *) 1}, {NULL, NULL, NULL}
+  {"get", b_speed, NULL}, {"set", b_speed, (void *) 1}
 };
-const TS_Module ts_std_baudrate_module = {"std.baudrate", funcs};
+const TS_Module ts_std_baudrate_module = TS_MODULE_INIT ("std.baudrate", funcs);

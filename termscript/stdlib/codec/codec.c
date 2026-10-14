@@ -667,7 +667,6 @@ static const TS_FuncDef codec_funcs[] = {
   { "ends_with", c_ends_with, NULL },
   { "repeat", c_repeat, NULL },
   { "split", c_split, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_codec_module = { "std.codec", codec_funcs };
+const TS_Module ts_std_codec_module = TS_MODULE_INIT ("std.codec", codec_funcs);

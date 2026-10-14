@@ -95,7 +95,6 @@ static const TS_FuncDef sched_funcs[] = {
   { "now_ms", s_now_ms, NULL },
   { "now_s", s_now_s, NULL },
   { "elapsed", s_elapsed, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_sched_module = { "std.sched", sched_funcs };
+const TS_Module ts_std_sched_module = TS_MODULE_INIT ("std.sched", sched_funcs);

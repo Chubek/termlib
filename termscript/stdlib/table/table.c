@@ -231,7 +231,6 @@ out_of_memory:
 
 static const TS_FuncDef table_funcs[] = {
   { "render", t_render, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_table_module = { "std.table", table_funcs };
+const TS_Module ts_std_table_module = TS_MODULE_INIT ("std.table", table_funcs);

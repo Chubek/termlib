@@ -1,1 +1,1 @@
-const emulator_m = G:load "std.emulator";
+const emulator_m = G:load("std.emulator");

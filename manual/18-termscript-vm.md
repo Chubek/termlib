@@ -20,6 +20,52 @@ Termscript exposes two C surfaces:
 - Compiled text returned by compile APIs is borrowed until the next compile on
   the same VM or VM destruction.
 
+## Native module ABI
+
+Termscript 0.2 introduces `TS_NATIVE_ABI_VERSION == 1`. This replaces the
+unversioned module layout: **rebuild all native extensions**. Callback signatures
+(`TS_Func`) and `TS_FuncDef` userdata remain unchanged.
+
+**Illustrative declaration** (supply a callback with the `TS_Func` signature):
+
+```c
+static const TS_FuncDef funcs[] = {
+  { "answer", answer_callback, NULL }
+};
+static const TS_Module module = TS_MODULE_INIT("example", funcs);
+```
+
+- Static tables use `TS_MODULE_INIT(name, array)`; pass an actual array.
+- Dynamic descriptors use `ts_module_init(&module, name, funcs, count)`.
+  The initializer is NULL-safe and borrows all pointers.
+- Tables contain exactly `func_count` real entries, without a NULL sentinel.
+  An empty module may use NULL functions and a zero count.
+- Descriptors carry `struct_size`, `abi_version`, and zeroed reserved fields.
+  `ts_native_abi_version()` queries the runtime's supported ABI.
+- `ts_module_validate()` checks size/version before touching the table, rejects
+  empty names, NULL callbacks, duplicate function names, nonzero reserved fields,
+  and counts above `TS_MAX_MODULE_FUNCS` (4096). Incompatible descriptors return
+  `TS_ERR_UNSUPPORTED`; malformed tables return `TS_ERR_INVAL`; oversized tables
+  return `TS_ERR_LIMIT`. Validation leaves the diagnostic untouched on success.
+- `ts_vm_register_module()` validates before publishing and borrows the
+  descriptor. Failed registration retains no resources or registry entry.
+- `ts_module_find_func()` performs bounded lookup on a validated descriptor and
+  returns a borrowed entry, or NULL for a miss/NULL input.
+
+Descriptors, names, and function tables must remain immutable and alive while
+registered or referenced by a module handle. Callback userdata must remain alive
+for that duration; its contents may be mutable. There is no unload API.
+The VM is single-threaded; synchronize use of shared callback userdata.
+`argv` is borrowed for the call, and may be NULL when `argc == 0`. `ret` begins
+as nil: the runtime adopts it on success and frees/resets it on failure while
+preserving the callback's status and diagnostic. Callbacks release their own
+intermediate resources. Direct C callers of a `TS_Func` own its return value even
+on failure and must release it themselves.
+
+The Termlib `DT_TermModule` compatibility surface retains its sentinel tables;
+the adapter constructs a counted `TS_Module` internally. ABI validation checks
+metadata, not arbitrary pointer validity, and native callbacks are not sandboxed.
+
 ## Compile options
 
 Use option initializers before calling the generic backend dispatcher:

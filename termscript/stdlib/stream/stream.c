@@ -218,7 +218,6 @@ static const TS_FuncDef stream_funcs[] = {
   { "len", s_len, NULL },
   { "getline", s_getline, NULL },
   { "clear", s_clear, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_stream_module = { "std.stream", stream_funcs };
+const TS_Module ts_std_stream_module = TS_MODULE_INIT ("std.stream", stream_funcs);

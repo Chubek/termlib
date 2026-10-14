@@ -209,7 +209,6 @@ static const TS_FuncDef menu_funcs[] = {
   { "pick", m_pick, NULL },
   { "confirm", m_confirm, NULL },
   { "select", m_select, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_menu_module = { "std.menu", menu_funcs };
+const TS_Module ts_std_menu_module = TS_MODULE_INIT ("std.menu", menu_funcs);

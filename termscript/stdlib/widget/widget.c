@@ -233,7 +233,6 @@ static const TS_FuncDef widget_funcs[] = {
   { "progress", w_progress, NULL },
   { "gauge", w_gauge, NULL },
   { "spinner", w_spinner, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_widget_module = { "std.widget", widget_funcs };
+const TS_Module ts_std_widget_module = TS_MODULE_INIT ("std.widget", widget_funcs);

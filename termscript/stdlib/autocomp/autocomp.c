@@ -261,8 +261,6 @@ static const TS_FuncDef autocomp_funcs[] = {
   { "complete", a_complete, NULL },
   { "common", a_common, NULL },
   { "rank", a_rank, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_autocomp_module = { "std.autocomp",
-                                           autocomp_funcs };
+const TS_Module ts_std_autocomp_module = TS_MODULE_INIT ("std.autocomp", autocomp_funcs);

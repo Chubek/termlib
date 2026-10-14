@@ -412,6 +412,6 @@ static const TS_FuncDef funcs[] = {
   {"info", c_state, (void *) 4},
   {"inject", c_inject, NULL}, {"event", c_event, NULL},
   {"watch", c_watch, NULL}, {"unwatch", c_watch, (void *) 1},
-  {"outputs", c_outputs, NULL}, {NULL, NULL, NULL}
+  {"outputs", c_outputs, NULL}
 };
-const TS_Module ts_std_compositor_module = {"std.compositor", funcs};
+const TS_Module ts_std_compositor_module = TS_MODULE_INIT ("std.compositor", funcs);

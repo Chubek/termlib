@@ -24,7 +24,8 @@ call (const TS_Module *m, const char *name, TS_Value *r, size_t n, ...)
   CHECK (n <= 8); va_start (ap, n);
   for (size_t i = 0; i < n; i++) a[i] = va_arg (ap, TS_Value);
   va_end (ap); ts_value_free (r); ts_error_clear (&error);
-  for (const TS_FuncDef *f = m->funcs; f->name; f++) if (!strcmp (f->name, name)) return f->func (vm, f->userdata, a, n, r, &error);
+  const TS_FuncDef *f = ts_module_find_func (m, name);
+  if (f) return f->func (vm, f->userdata, a, n, r, &error);
   CHECK (0); return TS_ERR_INVAL;
 }
 #define C(name,r,n,...) call (&ts_std_compositor_module,name,r,n,__VA_ARGS__)

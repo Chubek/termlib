@@ -87,6 +87,5 @@ static const TS_FuncDef funcs[] = {
   {"foreground", c_get, (void *) 2}, {"background", c_get, (void *) 3},
   {"attributes", c_get, (void *) 4}, {"ansi", c_get, (void *) 5},
   {"clone", c_get, (void *) 6}, {"with_style", c_style, NULL},
-  {NULL, NULL, NULL}
 };
-const TS_Module ts_std_cell_module = {"std.cell", funcs};
+const TS_Module ts_std_cell_module = TS_MODULE_INIT ("std.cell", funcs);

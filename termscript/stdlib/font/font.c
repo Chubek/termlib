@@ -303,7 +303,6 @@ static const TS_FuncDef funcs[] = {
   {"match", f_match, NULL}, {"open", f_open, NULL}, {"list", f_list, NULL},
   {"file", f_get, NULL}, {"family", f_get, (void *) 1}, {"style", f_get, (void *) 2},
    {"index", f_get, (void *) 3}, {"units_per_em", f_get, (void *) 4}, {"has", f_has, NULL}, {"shape", f_shape, NULL},
-  {NULL, NULL, NULL}
 };
-const TS_Module ts_std_font_module = {"std.font", funcs};
-const TS_Module ts_std_font_discovery_module = {"std.font_discovery", funcs};
+const TS_Module ts_std_font_module = TS_MODULE_INIT ("std.font", funcs);
+const TS_Module ts_std_font_discovery_module = TS_MODULE_INIT ("std.font_discovery", funcs);

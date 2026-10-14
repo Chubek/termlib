@@ -62,11 +62,13 @@ extern "C"
 #endif
 
 #define TS_VERSION_MAJOR 0
-#define TS_VERSION_MINOR 1
+#define TS_VERSION_MINOR 2
 #define TS_VERSION_PATCH 0
 
 #define TS_ERROR_MSG_SIZE 256
 #define TS_MAX_MODULES 128
+#define TS_MAX_MODULE_FUNCS 4096
+#define TS_NATIVE_ABI_VERSION 1u
 
 #define TS_COMPILE_OPTIONS_VERSION 1u
 
@@ -172,25 +174,60 @@ bool ts_value_truthy (const TS_Value *v);
 TS_Status ts_value_to_string (const TS_Value *value, char **out,
                               TS_Error *error);
 
-/* Native extension ABI. */
+/* Native extension ABI, version 1 (replaces the unversioned sentinel ABI).
+ * Rebuild native extensions against this header. Callback signatures are
+ * unchanged; function tables now contain exactly func_count real entries.
+ * No sentinel entry is required or accepted within that count. */
 typedef struct TS_VM TS_VM;
 
+/* argv and userdata are borrowed. argc == 0 permits argv == NULL. ret starts
+ * as nil; its payload is adopted by the runtime. On failure the runtime frees
+ * the returned payload and resets ret to nil before propagating the status.
+ * Callbacks must release intermediate resources and preserve their diagnostic.
+ * error may be NULL. */
 typedef TS_Status (*TS_Func) (TS_VM *vm, void *userdata,
                               const TS_Value *argv, size_t argc,
                               TS_Value *ret, TS_Error *error);
 
 typedef struct
 {
-  const char *name;     /* Borrowed static string. */
+  const char *name;     /* Borrowed immutable string. */
   TS_Func func;         /* Must be non-NULL. */
   void *userdata;       /* Borrowed author context, may be NULL. */
 } TS_FuncDef;
 
 typedef struct
 {
-  const char *name;             /* Borrowed static string. */
-  const TS_FuncDef *funcs;      /* Borrowed NULL-terminated table. */
+  uint32_t struct_size;         /* sizeof(TS_Module), set by initializer. */
+  uint32_t abi_version;         /* TS_NATIVE_ABI_VERSION. */
+  const char *name;             /* Borrowed immutable string. */
+  const TS_FuncDef *funcs;       /* Borrowed counted table; NULL if count is 0. */
+  size_t func_count;            /* <= TS_MAX_MODULE_FUNCS. */
+  uint32_t reserved[4];         /* Must be zero. */
 } TS_Module;
+
+/* Static initializer for an actual array of TS_FuncDef (not a pointer).
+ * Works in C and C++; omit the old {NULL, NULL, NULL} sentinel. */
+#define TS_MODULE_INIT(module_name, function_array) \
+  { sizeof (TS_Module), TS_NATIVE_ABI_VERSION, (module_name), \
+    (function_array), sizeof (function_array) / sizeof ((function_array)[0]), \
+    { 0, 0, 0, 0 } }
+
+/* Dynamic descriptor initializer; borrows name/functions, does not validate.
+ * NULL-safe. Descriptor, names and function table must remain immutable while
+ * registered or referenced by a module handle. All borrowed storage, including
+ * callback userdata, must remain alive for that duration. */
+void ts_module_init (TS_Module *module, const char *name,
+                     const TS_FuncDef *funcs, size_t func_count);
+uint32_t ts_native_abi_version (void);
+/* Rejects incompatible size/version before inspecting the table, then invalid
+ * names/callbacks, duplicate function names, reserved fields and size limits.
+ * Does not register or take ownership; leaves error untouched on success. */
+TS_Status ts_module_validate (const TS_Module *module, TS_Error *error);
+/* Lookup in a previously validated, immutable descriptor. Borrowed result;
+ * NULL on a miss or NULL input. Never scans beyond func_count. */
+const TS_FuncDef *ts_module_find_func (const TS_Module *module,
+                                      const char *name);
 
 /* Arity guard for TS_Func implementations. */
 TS_Status ts_check_argc (TS_VM *vm, const TS_Value *argv, size_t argc,
@@ -199,7 +236,7 @@ TS_Status ts_check_argc (TS_VM *vm, const TS_Value *argv, size_t argc,
 /* Embedding API. */
 TS_VM *ts_vm_create (TS_Error *error);
 void ts_vm_free (TS_VM *vm); /* NULL-safe. */
-/* Register a module on this VM (validates table, rejects duplicates).
+/* Register a module on this VM (validates ABI/table, rejects duplicates).
  * May race scripts running on the same VM. */
 TS_Status ts_vm_register_module (TS_VM *vm, const TS_Module *module,
                                  TS_Error *error);

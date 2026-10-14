@@ -99,5 +99,5 @@ static TS_Status entry(TS_VM *v,void *u,const TS_Value *a,size_t n,TS_Value *r,T
   st=ts_std_ret_str(r,out,e);free(out);
 done:ts_sbuf_free(&entry);ts_sbuf_free(&program);return st;
 }
-static const TS_FuncDef funcs[]={{"to_termcap_name",name_convert,NULL},{"to_terminfo_name",name_convert,(void *)1},{"to_termcap_entry",entry,NULL},{"to_terminfo_entry",entry,(void *)1},{NULL,NULL,NULL}};
-const TS_Module ts_std_termcap_module={"std.termcap",funcs};
+static const TS_FuncDef funcs[]={{"to_termcap_name",name_convert,NULL},{"to_terminfo_name",name_convert,(void *)1},{"to_termcap_entry",entry,NULL},{"to_terminfo_entry",entry,(void *)1}};
+const TS_Module ts_std_termcap_module = TS_MODULE_INIT ("std.termcap", funcs);

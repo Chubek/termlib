@@ -149,6 +149,5 @@ static const TS_FuncDef funcs[] = {
   {"fill", s_fill, NULL}, {"text", s_get, NULL}, {"render", s_get, (void *) 1},
   {"ansi", s_get, (void *) 1}, {"rows", s_get, (void *) 2}, {"cols", s_get, (void *) 3},
   {"line", s_get, (void *) 4}, {"cell", s_get, (void *) 5}, {"resize", s_resize, NULL},
-  {NULL, NULL, NULL}
 };
-const TS_Module ts_std_screen_module = {"std.screen", funcs};
+const TS_Module ts_std_screen_module = TS_MODULE_INIT ("std.screen", funcs);

@@ -246,5 +246,5 @@ static TS_Status line(TS_VM *v,void *u,const TS_Value *a,size_t n,TS_Value *r,TS
   if(k!=(size_t)which){free(tmp);ts_std_ret_nil(r);return TS_OK;}
   TS_Status st=ts_std_ret_strn(r,tmp+start,end-start,e);free(tmp);return st;
 }
-static const TS_FuncDef funcs[]={{"new",create,NULL},{"map_file",map_file,NULL},{"insert",edit,NULL},{"replace",edit,(void *)1},{"delete",edit,(void *)2},{"len",length,NULL},{"line",line,NULL},{"slice",slice,NULL},{"contents",contents,NULL},{NULL,NULL,NULL}};
-const TS_Module ts_std_buffer_module={"std.buffer",funcs};
+static const TS_FuncDef funcs[]={{"new",create,NULL},{"map_file",map_file,NULL},{"insert",edit,NULL},{"replace",edit,(void *)1},{"delete",edit,(void *)2},{"len",length,NULL},{"line",line,NULL},{"slice",slice,NULL},{"contents",contents,NULL}};
+const TS_Module ts_std_buffer_module = TS_MODULE_INIT ("std.buffer", funcs);

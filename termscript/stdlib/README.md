@@ -6,15 +6,17 @@ Hybrid libraries. Each one is two halves:
   storage, parsing, syscalls and handles, written against
   `termscript.h` plus `common/ts_std_common.h`.
 - **Termscript companion** (`<name>/<name>.tsc`) — loaded with
-  `G:import "<name>"`, binds the module once (`<name>_m`) and spells
+  `G:import("<name>")`, binds the module once (`<name>_m`) and spells
   shared idioms as plain Termscript.
 
+**Runnable:**
+
 ```termscript
-G:import "json";
+G:import("json");
 const J = json_m;
-const doc = J:parse "{\"a\": [1, 2]}" or G:die "bad json";
-const second = J:get doc "a.1";
-G:puts second;
+const doc = J:parse("{\"a\": [1, 2]}") or G:die("bad json");
+const second = J:get(doc, "a.1");
+G:puts(second);
 ```
 
 ## Module index
@@ -123,7 +125,7 @@ plus `TERMSCRIPT_PATH`, and reject cycles. The NovoParse grammar
 #include <termscript/stdlib/ts_stdlib.h>
 ts_stdlib_register_all (vm, &err);   /* native halves */
 ts_stdlib_search_path (vm, &err);    /* install + build-tree .tsc */
-ts_vm_run_string (vm, "G:import \"json\"; ...", &out, &err);
+ts_vm_run_string (vm, "G:import(\"json\");", &out, &err);
 ```
 
 `pkg-config --libs termscript_stdlib` links it;
@@ -132,14 +134,24 @@ paths at build time.
 
 ## Adding a module
 
+Native module ABI version 1 is size-tagged and counted. Use
+`TS_MODULE_INIT("std.name", funcs)` for a static array or
+`ts_module_init(&module, name, funcs, count)` for a dynamic descriptor.
+Remove the old `{NULL, NULL, NULL}` sentinel and rebuild native extensions.
+Registration validates the ABI, reserved fields, table bounds, callbacks and
+duplicate function names. `ts_module_find_func` provides counted lookup;
+do not scan until a NULL name. Callback signatures and userdata are unchanged.
+See [the C API contract](../../../manual/18-termscript-vm.md#native-module-abi).
+
 1. Create `stdlib/<name>/` with `<name>.c` (a `TS_Module`
    named `std.<name>`), `<name>.h` (`extern const TS_Module
    ts_std_<name>_module;`), and `<name>.tsc` (bind `<name>_m`,
-   atomic-args calls only — nested calls do not parse).
+   parenthesized scalar/reference arguments — nested calls do not parse).
 2. Add `<name>` to `TS_STDLIB_MODULES` in `stdlib/CMakeLists.txt`,
    the registry table in `ts_stdlib.c`, the includes in
-   `ts_stdlib.h`, and the companion list in
-   `tests/termlib-test-suite/test_stdlib.c`.
+   `ts_stdlib.h`, and update `TS_STDLIB_NMODULES`. Add behavioral tests as
+   needed. `tests/test_termscript_stdlib.c` imports every registered companion
+   through the registry automatically.
 3. Handles need a file-static tag object, a destructor, value
    copy on push/set, and `nil` (not errors) for misses.
 

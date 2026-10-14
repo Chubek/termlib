@@ -239,7 +239,6 @@ static const TS_FuncDef color_funcs[] = {
   { "reverse", c_reverse, NULL },
   { "wrap", c_wrap, NULL },
   { "names", c_names, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_color_module = { "std.color", color_funcs };
+const TS_Module ts_std_color_module = TS_MODULE_INIT ("std.color", color_funcs);

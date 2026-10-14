@@ -241,7 +241,6 @@ c_get (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error
 static const TS_FuncDef funcs[] = {
   {"parse", c_parse, NULL}, {"apply", c_apply, NULL}, {"get", c_get, NULL},
   {"style", c_get, (void *) 1}, {"ansi", c_get, (void *) 2}, {"serialize", c_get, (void *) 3},
-  {NULL, NULL, NULL}
 };
-const TS_Module ts_std_css_module = {"std.css", funcs};
-const TS_Module ts_std_stylesheet_module = {"std.stylesheet", funcs};
+const TS_Module ts_std_css_module = TS_MODULE_INIT ("std.css", funcs);
+const TS_Module ts_std_stylesheet_module = TS_MODULE_INIT ("std.stylesheet", funcs);

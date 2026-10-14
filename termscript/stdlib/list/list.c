@@ -218,7 +218,6 @@ static const TS_FuncDef list_funcs[] = {
   { "pop", l_pop, NULL },
   { "join", l_join, NULL },
   { "clear", l_clear, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_list_module = { "std.list", list_funcs };
+const TS_Module ts_std_list_module = TS_MODULE_INIT ("std.list", list_funcs);

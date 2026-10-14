@@ -1,21 +1,23 @@
 # std.shell
 
 `std.shell` embeds the bundled LibShell C++20 runtime, text parser and POSIX
-executor. Import the companion with `G:import "shell"` (binding `shell_m`), or
-load the native module with `G:load "std.shell"`.
+executor. Import the companion with `G:import("shell")` (binding `shell_m`), or
+load the native module with `G:load("std.shell")`.
+
+**Runnable:**
 
 ```termscript
-G:import "shell";
+G:import("shell");
 const SH = shell_m;
-const sh = SH:new;
-SH:set sh "LABEL" "hello world";
-const label = SH:word "\"$LABEL\"";
-const print = SH:command "printf" "%s\n" label;
-const output = SH:capture sh print;
-const status = SH:status sh;
-G:puts output;
-G:puts status;
-SH:close sh;
+const sh = SH:new();
+SH:set(sh, "LABEL", "hello world");
+const label = SH:word("\"$LABEL\"");
+const print = SH:command("printf", "%s\n", label);
+const output = SH:capture(sh, print);
+const status = SH:status(sh);
+G:puts(output);
+G:puts(status);
+SH:close(sh);
 ```
 
 ## Execution and graphs

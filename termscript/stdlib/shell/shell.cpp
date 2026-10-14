@@ -831,9 +831,8 @@ const TS_FuncDef shell_funcs[] = {
   { "stdout", native<captured<false>>, nullptr },
   { "stderr", native<captured<true>>, nullptr },
   { "result", native<s_result>, nullptr },
-  { nullptr, nullptr, nullptr }
 };
 
 } // namespace
 
-extern "C" const TS_Module ts_std_shell_module = { "std.shell", shell_funcs };
+extern "C" const TS_Module ts_std_shell_module = TS_MODULE_INIT ("std.shell", shell_funcs);

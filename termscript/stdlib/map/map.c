@@ -290,7 +290,6 @@ static const TS_FuncDef map_funcs[] = {
   { "del", m_del, NULL },
   { "len", m_len, NULL },
   { "keys", m_keys, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_map_module = { "std.map", map_funcs };
+const TS_Module ts_std_map_module = TS_MODULE_INIT ("std.map", map_funcs);

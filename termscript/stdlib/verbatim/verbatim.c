@@ -117,7 +117,6 @@ oom:
 
 static const TS_FuncDef verbatim_funcs[] = {
   { "render", v_render, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_verbatim_module = { "std.verbatim", verbatim_funcs };
+const TS_Module ts_std_verbatim_module = TS_MODULE_INIT ("std.verbatim", verbatim_funcs);

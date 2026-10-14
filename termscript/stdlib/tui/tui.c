@@ -222,6 +222,6 @@ static const TS_FuncDef funcs[] = {
   {"clear", t_action, (void *) 1}, {"invalidate", t_action, (void *) 2},
   {"render", t_action, (void *) 3}, {"present", t_action, (void *) 4},
   {"end", t_action, (void *) 5}, {"close", t_action, (void *) 5},
-  {"begin", t_begin, NULL}, {"resize", t_resize, NULL}, {"box", t_box, NULL}, {NULL, NULL, NULL}
+  {"begin", t_begin, NULL}, {"resize", t_resize, NULL}, {"box", t_box, NULL}
 };
-const TS_Module ts_std_tui_module = {"std.tui", funcs};
+const TS_Module ts_std_tui_module = TS_MODULE_INIT ("std.tui", funcs);

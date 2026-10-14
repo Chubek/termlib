@@ -305,6 +305,6 @@ static const TS_FuncDef funcs[] = {
   {"size", t_size, NULL}, {"resize", t_size, (void *) 1},
   {"move", t_control, NULL}, {"cursor", t_control, (void *) 1}, {"alternate", t_control, (void *) 2},
   {"paste", t_control, (void *) 3}, {"title", t_control, (void *) 4}, {"clear", t_control, (void *) 5},
-  {"mouse", t_control, (void *) 6}, {NULL, NULL, NULL}
+  {"mouse", t_control, (void *) 6}
 };
-const TS_Module ts_std_terminal_module = {"std.terminal", funcs};
+const TS_Module ts_std_terminal_module = TS_MODULE_INIT ("std.terminal", funcs);

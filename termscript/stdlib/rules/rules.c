@@ -111,7 +111,6 @@ oom:
 static const TS_FuncDef rules_funcs[] = {
   { "horizontal", r_horizontal, NULL },
   { "vertical", r_vertical, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_rules_module = { "std.rules", rules_funcs };
+const TS_Module ts_std_rules_module = TS_MODULE_INIT ("std.rules", rules_funcs);

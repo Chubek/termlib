@@ -435,7 +435,6 @@ static const TS_FuncDef pty_funcs[] = {
   { "status", p_state, NULL }, { "fd", p_state, (void *) 1 },
   { "nonblocking", p_state, (void *) 2 }, { "resize", p_state, (void *) 3 },
   { "close", p_close, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_pty_module = { "std.pty", pty_funcs };
+const TS_Module ts_std_pty_module = TS_MODULE_INIT ("std.pty", pty_funcs);

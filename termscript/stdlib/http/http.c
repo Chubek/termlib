@@ -303,7 +303,6 @@ static const TS_FuncDef http_funcs[] = {
   { "headers", h_headers, NULL },
   { "post", h_post, NULL },
   { "url_parse", h_url_parse, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_http_module = { "std.http", http_funcs };
+const TS_Module ts_std_http_module = TS_MODULE_INIT ("std.http", http_funcs);

@@ -232,6 +232,6 @@ static const TS_FuncDef funcs[] = {
   {"get", t_get, NULL}, {"save", t_get, NULL}, {"raw", t_action, NULL},
   {"apply", t_action, (void *) 1}, {"restore", t_action, (void *) 2},
   {"close", t_action, (void *) 3}, {"flag", t_flag, NULL}, {"set_flag", t_flag, (void *) 1},
-  {"cc", t_cc, NULL}, {"set_cc", t_cc, (void *) 1}, {NULL, NULL, NULL}
+  {"cc", t_cc, NULL}, {"set_cc", t_cc, (void *) 1}
 };
-const TS_Module ts_std_termios_module = {"std.termios", funcs};
+const TS_Module ts_std_termios_module = TS_MODULE_INIT ("std.termios", funcs);

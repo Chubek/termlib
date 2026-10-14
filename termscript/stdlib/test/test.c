@@ -170,7 +170,6 @@ static const TS_FuncDef test_funcs[] = {
   { "eq", t_eq, NULL },
   { "summary", t_summary, NULL },
   { "done", t_done, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_test_module = { "std.test", test_funcs };
+const TS_Module ts_std_test_module = TS_MODULE_INIT ("std.test", test_funcs);

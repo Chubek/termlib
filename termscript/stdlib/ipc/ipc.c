@@ -157,7 +157,6 @@ static const TS_FuncDef ipc_funcs[] = {
   { "lock", i_lock, NULL },
   { "unlock", i_unlock, NULL },
   { "fifo", i_fifo, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_ipc_module = { "std.ipc", ipc_funcs };
+const TS_Module ts_std_ipc_module = TS_MODULE_INIT ("std.ipc", ipc_funcs);

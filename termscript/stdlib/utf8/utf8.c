@@ -175,6 +175,5 @@ static const TS_FuncDef funcs[] = {
   {"slice", u_slice, NULL}, {"graphemes", u_graphemes, NULL},
   {"reverse", u_graphemes, (void *) 1}, {"normalize", u_normalize, NULL},
   {"casefold", u_normalize, (void *) 1}, {"sanitize", u_sanitize, NULL},
-  {NULL, NULL, NULL}
 };
-const TS_Module ts_std_utf8_module = {"std.utf8", funcs};
+const TS_Module ts_std_utf8_module = TS_MODULE_INIT ("std.utf8", funcs);

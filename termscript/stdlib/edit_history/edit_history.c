@@ -321,9 +321,6 @@ static const TS_FuncDef history_funcs[] = {
   { "at", h_at, NULL },
   { "limit", h_limit, NULL },
   { "clear", h_clear, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_edit_history_module = {
-  "std.edit_history", history_funcs
-};
+const TS_Module ts_std_edit_history_module = TS_MODULE_INIT ("std.edit_history", history_funcs);

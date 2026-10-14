@@ -388,7 +388,6 @@ static const TS_FuncDef csv_funcs[] = {
   { "parse_line", c_parse_line, NULL },
   { "join", c_join, NULL },
   { "field", c_field, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_csv_module = { "std.csv", csv_funcs };
+const TS_Module ts_std_csv_module = TS_MODULE_INIT ("std.csv", csv_funcs);

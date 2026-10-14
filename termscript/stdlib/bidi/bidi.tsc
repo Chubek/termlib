@@ -1,2 +1,2 @@
 # visual produces terminal-ready visual-order text, including Persian joining.
-const bidi_m = G:load "std.bidi" or G:die "std.bidi missing";
+const bidi_m = G:load("std.bidi") or G:die("std.bidi missing");

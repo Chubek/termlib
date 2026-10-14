@@ -110,8 +110,6 @@ static const TS_FuncDef readline_funcs[] = {
   { "line", r_line, NULL },
   { "history", r_history, NULL },
   { "add_history", r_add_history, NULL },
-  { NULL, NULL, NULL }
 };
 
-const TS_Module ts_std_readline_module = { "std.readline",
-                                           readline_funcs };
+const TS_Module ts_std_readline_module = TS_MODULE_INIT ("std.readline", readline_funcs);
