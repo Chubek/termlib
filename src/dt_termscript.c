@@ -1060,6 +1060,63 @@ dt_rt_output (const DT_TermVM *vm)
   return ts_rt_output (vm->tsvm);
 }
 
+DT_Status
+dt_rt_lifetime_set (DT_TermVM *vm, const char *name, DT_TermValue *val,
+                    unsigned line, DT_Error *error)
+{
+  TS_Value tmp = {0}; TS_Error e; ts_error_clear (&e);
+  if (!vm || !val) { dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, line, "bad lifetime binding"); return DT_ERR_INVALID_ARGUMENT; }
+  TS_Status st = ts_from_dt (&tmp, val);
+  if (st == TS_OK) st = ts_rt_lifetime_set (vm->tsvm, name, &tmp, line, &e);
+  ts_value_free (&tmp);
+  if (st == TS_OK) dt_release_value (val);
+  else { if (e.code == TS_OK) ts_error_set (&e, st, 0, line, "lifetime binding failed"); dt_convert_error (error, &e); }
+  return (DT_Status) st;
+}
+
+DT_Status
+dt_rt_flow_enter (DT_TermVM *vm, const DT_TermValue *val, DT_Status status, DT_Error *error)
+{
+  TS_Value tmp = {0}; TS_Error e; ts_error_clear (&e);
+  if (!vm || !val) { dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0, "bad flow frame"); return DT_ERR_INVALID_ARGUMENT; }
+  if (error) ts_convert_error (&e, error);
+  TS_Status st = ts_from_dt (&tmp, val);
+  if (st == TS_OK) st = ts_rt_flow_enter (vm->tsvm, &tmp, (TS_Status) status, &e);
+  ts_value_free (&tmp); dt_convert_error (error, &e);
+  return (DT_Status) st;
+}
+
+DT_Status
+dt_rt_flow_leave (DT_TermVM *vm, DT_Status status, DT_Error *error)
+{
+  TS_Error e; ts_error_clear (&e);
+  if (error) ts_convert_error (&e, error);
+  TS_Status st = ts_rt_flow_leave (vm ? vm->tsvm : NULL, (TS_Status) status, &e);
+  dt_convert_error (error, &e); return (DT_Status) st;
+}
+
+DT_Status
+dt_rt_field (DT_TermVM *vm, const char *name, const char *field,
+             DT_TermValue *out, unsigned line, DT_Error *error)
+{
+  TS_Value tmp = {0}; TS_Error e; ts_error_clear (&e);
+  if (!vm || !out) { dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, line, "bad field lookup"); return DT_ERR_INVALID_ARGUMENT; }
+  TS_Status st = ts_rt_field (vm->tsvm, name, field, &tmp, line, &e);
+  if (st == TS_OK) st = dt_from_ts (out, &tmp);
+  ts_value_free (&tmp);
+  if (st != TS_OK) { if (e.code == TS_OK) ts_error_set (&e, st, 0, line, "field lookup failed"); dt_convert_error (error, &e); }
+  return (DT_Status) st;
+}
+
+DT_Status
+dt_rt_finish (DT_TermVM *vm, DT_Status status, DT_Error *error)
+{
+  TS_Error e; ts_error_clear (&e);
+  if (error) ts_convert_error (&e, error);
+  TS_Status st = ts_rt_finish (vm ? vm->tsvm : NULL, (TS_Status) status, &e);
+  dt_convert_error (error, &e); return (DT_Status) st;
+}
+
 /* ---------------- C backend (DT flavor, shared emitter) ---------------- */
 
 const char *

@@ -62,13 +62,16 @@ extern "C"
 #endif
 
 #define TS_VERSION_MAJOR 0
-#define TS_VERSION_MINOR 2
+#define TS_VERSION_MINOR 3
 #define TS_VERSION_PATCH 0
 
 #define TS_ERROR_MSG_SIZE 256
 #define TS_MAX_MODULES 128
 #define TS_MAX_MODULE_FUNCS 4096
 #define TS_NATIVE_ABI_VERSION 1u
+#define TS_MAX_SOURCE_SIZE (1u << 20) /* Includes the trailing NUL. */
+#define TS_MAX_SYNTAX_NESTING 128u
+#define TS_MAX_EXPR_OPERATORS 256u
 
 #define TS_COMPILE_OPTIONS_VERSION 1u
 
@@ -302,6 +305,16 @@ TS_Status ts_rt_set (TS_VM *vm, const char *name, TS_Value *val,
 TS_Status ts_rt_step (TS_VM *vm, TS_Error *error);
 /* Borrowed captured G:puts output ("" when empty, never NULL). */
 const char *ts_rt_output (const TS_VM *vm);
+
+/* Section-language runtime. Values are borrowed except lifetime_set, which
+ * adopts on success. Flow frames own copies, nest, and must be balanced.
+ * leave preserves the original failing status/diagnostic. finish releases
+ * managed bindings in reverse acquisition order on every top-level exit. */
+TS_Status ts_rt_lifetime_set (TS_VM *, const char *, TS_Value *, unsigned, TS_Error *);
+TS_Status ts_rt_flow_enter (TS_VM *, const TS_Value *, TS_Status, TS_Error *);
+TS_Status ts_rt_flow_leave (TS_VM *, TS_Status, TS_Error *);
+TS_Status ts_rt_field (TS_VM *, const char *, const char *, TS_Value *, unsigned, TS_Error *);
+TS_Status ts_rt_finish (TS_VM *, TS_Status, TS_Error *);
 
 /* Termlib-flavored compile on a standalone VM (shared emitter backend;
  * used by dt_termscript_compile_to_c through the inner TS VM). */

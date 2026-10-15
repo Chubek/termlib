@@ -828,6 +828,15 @@ DT_Status dt_rt_mkstring (DT_TermValue *val, const char *s,
 bool dt_rt_truthy (const DT_TermValue *val);
 /* Borrowed captured G:puts output ("" when empty, never NULL). */
 const char *dt_rt_output (const DT_TermVM *vm);
+
+/* Section-language helpers. lifetime_set adopts on success; flow frames
+ * borrow/copy values and must be balanced. finish is NULL-tolerant cleanup
+ * only for valid VMs, releasing managed bindings on all execution exits. */
+DT_Status dt_rt_lifetime_set (DT_TermVM *, const char *, DT_TermValue *, unsigned, DT_Error *);
+DT_Status dt_rt_flow_enter (DT_TermVM *, const DT_TermValue *, DT_Status, DT_Error *);
+DT_Status dt_rt_flow_leave (DT_TermVM *, DT_Status, DT_Error *);
+DT_Status dt_rt_field (DT_TermVM *, const char *, const char *, DT_TermValue *, unsigned, DT_Error *);
+DT_Status dt_rt_finish (DT_TermVM *, DT_Status, DT_Error *);
 /* Value helpers (DT_TERM_STRING payloads are heap copies). */
 void dt_termvalue_free (DT_TermValue *value);
 DT_Status dt_termvalue_to_string (const DT_TermValue *value, char **out,

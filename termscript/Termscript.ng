@@ -6,16 +6,14 @@
 %token NUMBER /-?(0|[1-9][0-9]*)/;
 %token STRING /"([^"\\]|\\.)*"/;
 %token IDENT /[A-Za-z_][A-Za-z0-9_]*/;
+%token VARIABLE /\$[A-Za-z_][A-Za-z0-9_]*/;
 
 %left "or";
 
 # NovoParse-backed Termscript grammar.
 #
 # This file is the parser source for the currently implemented Termscript
-# executable subset.  The richer section-oriented examples under
-# termscript/examples are design inputs for the next semantic-IR stage; they are
-# intentionally not accepted here until syntax, ownership, cleanup, diagnostics,
-# and backend lowering are implemented together.  Native calls accept both the
+# language. Native calls accept both the
 # historical whitespace form (`G:puts value`) and the parenthesized form used by
 # the design examples for simple scalar/reference arguments (`G:puts(value)`).
 
@@ -25,37 +23,73 @@ layout: TRIVIA* => Layout;
 gap: TRIVIA+ => Gap;
 
 stmt: const_decl => Stmt
+    | config_decl => Stmt
+    | lifetime_decl => Stmt
+    | alias_decl => Stmt
+    | define_decl => Stmt
+    | interface_decl => Stmt
+    | section_decl => Stmt
+    | declaration => Stmt
     | while_stmt => Stmt
     | if_stmt => Stmt
     | assign_stmt => Stmt
     | expr_stmt => Stmt;
 
-const_decl: "const" gap IDENT layout "=" layout expr layout ";" => ConstDecl;
-assign_stmt: IDENT layout "=" layout expr layout ";" => AssignStmt;
+name: IDENT => Name | VARIABLE => Name;
+const_decl: "const" gap name layout "=" layout expr layout ";" => ConstDecl;
+config_decl: "config" gap name layout ":=" layout expr layout ";" => ConfigDecl;
+lifetime_decl: "lifetime" gap name layout ":=" layout expr layout ";" => LifetimeDecl;
+assign_stmt: name layout "=" layout expr layout ";" => AssignStmt
+           | name layout ":=" layout expr layout ";" => AssignStmt;
+alias_decl: "@alias" gap IDENT gap ":" IDENT layout => AliasDecl;
+define_decl: "@define" gap name gap name layout => DefineDecl;
+interface_decl: ".interface" layout program layout ".end" => InterfaceDecl;
+section_decl: ".section" gap IDENT layout program layout ".end" => SectionDecl;
+declaration: name layout ":Declare:" IDENT layout "(" layout ":" IDENT layout ")" layout ";"? => Declaration;
 expr_stmt: expr layout ";" => ExprStmt;
 while_stmt: "while" gap expr gap "do" layout program layout "end" => WhileStmt;
-if_stmt: "if" gap expr gap "do" layout program layout if_tail => IfStmt;
+if_stmt: "if" gap expr gap "do" layout program layout if_tail => IfStmt
+       | "if" gap expr gap "then" layout program layout if_tail => IfStmt;
 if_tail: "else" layout program layout "end" => ElseTail
        | "end" => NoElseTail;
 
-expr: expr gap "or" gap unary => OrExpr
-    | unary => Expr;
+expr: fallback layout "~>" layout unary flow_error_tail => FlowExpr
+    | fallback layout "=>" layout unary => SuccessExpr
+    | fallback => Expr;
+flow_error_tail: layout "->" layout unary flow_success_tail => ErrorTail
+               | flow_success_tail => ErrorTail;
+flow_success_tail: layout "=>" layout unary => SuccessTail
+                 | layout => NoSuccessTail;
+fallback: fallback gap "or" gap unary => OrExpr
+     | unary => Expr;
 
-unary: "&" IDENT => RefExpr
+unary: "&" name => RefExpr
+     | "not" gap unary => NotExpr
+     | "(" layout expr layout ")" => GroupExpr
+     | name layout "->" IDENT => FieldExpr
+     | ":" IDENT => SymbolExpr
+     | "[" layout arg_list layout "]" => ListExpr
+     | "[" layout "]" => ListExpr
+     | "{" layout map_entries layout "}" => MapExpr
+     | "{" layout "}" => MapExpr
      | call => CallExpr
-     | IDENT => IdentExpr
+     | name => IdentExpr
      | NUMBER => NumberExpr
      | STRING => StringExpr;
 
-call: IDENT layout ":" layout IDENT call_args => Call;
+call: name layout ":" layout function_name call_args => Call;
+function_name: IDENT (":" IDENT)* => FunctionName;
+map_entries: map_entry (layout "," layout map_entry)* layout ","? => MapEntries;
+map_entry: STRING layout ":" layout expr => MapEntry;
 
 call_args: (gap arg)* => SpaceArgs
          | layout "(" layout arg_list layout ")" => ParenArgs
          | layout "(" layout ")" => EmptyParenArgs;
 
-arg_list: arg (layout "," layout arg)* layout ","? => ArgList;
+arg_list: expr (layout "," layout expr)* layout ","? => ArgList;
 
 arg: STRING => ArgString
    | NUMBER => ArgNumber
-   | "&" IDENT => ArgRef
-   | IDENT => ArgWord;
+   | "&" name => ArgRef
+   | ":" IDENT => ArgSymbol
+   | name => ArgWord;

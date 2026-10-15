@@ -36,6 +36,12 @@ void *ts_mk_argword (char *tok, unsigned line);
 void *ts_mk_argref (char *tok, unsigned line);
 void *ts_args_new (void);
 void *ts_args_add (void *args, void *arg);
+void *ts_mk_argexpr (void *expr);
+void *ts_mk_design (int kind, char *name, char *other, void *body, unsigned line);
+void *ts_mk_flow (void *value, void *on_error, void *after_error,
+                  void *on_success, unsigned line);
+void *ts_mk_field (char *name, char *field, unsigned line);
+void *ts_mk_not (void *expr, unsigned line);
 
 static TS_TLS size_t ts_ng_last_offset;
 static TS_TLS char ts_ng_last_message[256];
@@ -132,20 +138,38 @@ ts_np_first (const np_node *node, const char *name)
   return NULL;
 }
 
+static char *
+ts_np_name (const np_node *node)
+{
+  const np_node *tok;
+  if (!node) return NULL;
+  if (ts_np_is (node, "IDENT") || ts_np_is (node, "VARIABLE"))
+    return ts_np_textdup (node);
+  tok = ts_np_first (node, "IDENT");
+  if (!tok) tok = ts_np_first (node, "VARIABLE");
+  if (!tok) tok = ts_np_first (node, "Name");
+  return tok ? ts_np_name (tok) : NULL;
+}
+
 static bool
 ts_np_is_expr_node (const np_node *node)
 {
   return ts_np_is (node, "Expr") || ts_np_is (node, "OrExpr") ||
          ts_np_is (node, "RefExpr") || ts_np_is (node, "CallExpr") ||
          ts_np_is (node, "Call") || ts_np_is (node, "IdentExpr") ||
-         ts_np_is (node, "NumberExpr") || ts_np_is (node, "StringExpr");
+          ts_np_is (node, "NumberExpr") || ts_np_is (node, "StringExpr") ||
+          ts_np_is (node, "GroupExpr") || ts_np_is (node, "SymbolExpr") ||
+          ts_np_is (node, "FieldExpr") || ts_np_is (node, "NotExpr") ||
+          ts_np_is (node, "FlowExpr") || ts_np_is (node, "SuccessExpr") ||
+          ts_np_is (node, "ListExpr") || ts_np_is (node, "MapExpr");
 }
 
 static bool
 ts_np_is_arg_node (const np_node *node)
 {
   return ts_np_is (node, "ArgString") || ts_np_is (node, "ArgNumber") ||
-          ts_np_is (node, "ArgRef") || ts_np_is (node, "ArgWord");
+          ts_np_is (node, "ArgRef") || ts_np_is (node, "ArgWord") ||
+          ts_np_is (node, "ArgSymbol");
 }
 
 static bool
@@ -160,7 +184,11 @@ ts_np_is_stmt_node (const np_node *node)
 {
   return ts_np_is (node, "Stmt") || ts_np_is (node, "ConstDecl") ||
          ts_np_is (node, "AssignStmt") || ts_np_is (node, "ExprStmt") ||
-         ts_np_is (node, "WhileStmt") || ts_np_is (node, "IfStmt");
+          ts_np_is (node, "WhileStmt") || ts_np_is (node, "IfStmt") ||
+          ts_np_is (node, "ConfigDecl") || ts_np_is (node, "LifetimeDecl") ||
+          ts_np_is (node, "AliasDecl") || ts_np_is (node, "DefineDecl") ||
+          ts_np_is (node, "InterfaceDecl") || ts_np_is (node, "SectionDecl") ||
+          ts_np_is (node, "Declaration");
 }
 
 static const np_node *
@@ -188,11 +216,11 @@ ts_np_arg (const np_node *node, const char *input)
     return (tok = ts_np_first (node, "NUMBER")) ?
            ts_mk_argnum (ts_np_textdup (tok), line) : NULL;
   if (ts_np_is (node, "ArgRef"))
-    return (tok = ts_np_first (node, "IDENT")) ?
-           ts_mk_argref (ts_np_textdup (tok), line) : NULL;
+    return ts_mk_argref (ts_np_name (node), line);
   if (ts_np_is (node, "ArgWord"))
-    return (tok = ts_np_first (node, "IDENT")) ?
-           ts_mk_argword (ts_np_textdup (tok), line) : NULL;
+    return ts_mk_argword (ts_np_name (node), line);
+  if (ts_np_is (node, "ArgSymbol"))
+    return ts_mk_argexpr (ts_np_expr (node, input));
   return NULL;
 }
 
@@ -249,6 +277,8 @@ ts_np_collect_args (const np_node *node, const char *input, void *args)
   size_t i, n;
   if (!args || !node)
     return NULL;
+  if (ts_np_is_expr_node (node))
+    return ts_args_add (args, ts_mk_argexpr (ts_np_expr (node, input)));
   if (ts_np_is_arg_node (node))
     {
       void *arg = ts_np_arg (node, input);
@@ -278,9 +308,9 @@ ts_np_call (const np_node *node, const char *input)
   for (i = 0; i < n; i++)
     {
       const np_node *child = np_node_child (node, i);
-      if (ts_np_is (child, "IDENT"))
+      if (ts_np_is (child, "Name"))
         {
-          char *text = ts_np_textdup (child);
+          char *text = ts_np_name (child);
           if (!text)
             return NULL;
           if (ident_count++ == 0)
@@ -290,6 +320,8 @@ ts_np_call (const np_node *node, const char *input)
           else
             ts_parse_free (text);
         }
+      else if (ts_np_is (child, "FunctionName"))
+        func = ts_np_rangedup (input, np_node_start (child), np_node_end (child));
       else if (ts_np_is_call_arg_container (child))
         {
           args = ts_np_collect_args (child, input, args);
@@ -326,9 +358,60 @@ ts_np_expr (const np_node *node, const char *input)
   unsigned line;
   if (!node)
     return NULL;
-  if (ts_np_is (node, "Expr") || ts_np_is (node, "CallExpr"))
-    return ts_np_expr (np_node_child (node, 0), input);
+  if (ts_np_is (node, "Expr") || ts_np_is (node, "CallExpr") ||
+      ts_np_is (node, "GroupExpr"))
+    return ts_np_expr (ts_np_first_expr (node), input);
   line = ts_np_line (node, input);
+  if (ts_np_is (node, "ListExpr") || ts_np_is (node, "MapExpr"))
+    {
+      bool map = ts_np_is (node, "MapExpr");
+      void *args = ts_args_new ();
+      const np_node *entries = ts_np_first (node, map ? "MapEntries" : "ArgList");
+      if (!map && entries) args = ts_np_collect_args (entries, input, args);
+      if (map && entries)
+        for (size_t i = 0; i < np_node_child_count (entries); i++)
+          {
+            const np_node *entry = np_node_child (entries, i);
+            if (!ts_np_is (entry, "MapEntry")) continue;
+            const np_node *key = ts_np_first (entry, "STRING");
+            if (!key) return NULL;
+            args = ts_args_add (args, ts_mk_argstr (ts_np_textdup (key), line));
+            args = ts_args_add (args, ts_mk_argexpr (ts_np_expr (ts_np_first_expr (entry), input)));
+          }
+      char *module = ts_parse_alloc (2), *func = ts_parse_alloc (5);
+      if (!module || !func) { ts_oom (); return NULL; }
+      strcpy (module, "G"); strcpy (func, map ? "map" : "list");
+      return ts_mk_unary (module, ts_mk_callrest (func, args, line), line);
+    }
+  if (ts_np_is (node, "NotExpr"))
+    return ts_mk_not (ts_np_expr (ts_np_first_expr (node), input), line);
+  if (ts_np_is (node, "FieldExpr"))
+    return ts_mk_field (ts_np_name (ts_np_first (node, "Name")),
+                         ts_np_name (ts_np_first (node, "IDENT")), line);
+  if (ts_np_is (node, "SymbolExpr") || ts_np_is (node, "ArgSymbol"))
+    return ts_mk_design (7, ts_np_name (node), NULL, NULL, line);
+  if (ts_np_is (node, "FlowExpr") || ts_np_is (node, "SuccessExpr"))
+    {
+      void *value = NULL, *handler = NULL, *after = NULL, *success = NULL;
+      size_t i, n = np_node_child_count (node);
+      for (i = 0; i < n; i++)
+        {
+          const np_node *ch = np_node_child (node, i);
+          if (ts_np_is_expr_node (ch))
+            { if (!value) value = ts_np_expr (ch, input);
+              else handler = ts_np_expr (ch, input); }
+          else if (ts_np_is (ch, "ErrorTail"))
+            {
+              const np_node *ex = ts_np_first_expr (ch);
+              const np_node *tail = ts_np_first (ch, "SuccessTail");
+              if (ex) after = ts_np_expr (ex, input);
+              if (tail) success = ts_np_expr (ts_np_first_expr (tail), input);
+            }
+        }
+      if (ts_np_is (node, "SuccessExpr"))
+        { success = handler; handler = NULL; }
+      return ts_mk_flow (value, handler, after, success, line);
+    }
   if (ts_np_is (node, "OrExpr"))
     {
       const np_node *lhs = NULL, *rhs = NULL;
@@ -350,11 +433,9 @@ ts_np_expr (const np_node *node, const char *input)
   if (ts_np_is (node, "Call"))
     return ts_np_call (node, input);
   if (ts_np_is (node, "RefExpr"))
-    return (tok = ts_np_first (node, "IDENT")) ?
-           ts_mk_ref (ts_np_textdup (tok), line) : NULL;
+    return ts_mk_ref (ts_np_name (node), line);
   if (ts_np_is (node, "IdentExpr"))
-    return (tok = ts_np_first (node, "IDENT")) ?
-           ts_mk_unary (ts_np_textdup (tok), NULL, line) : NULL;
+    return ts_mk_unary (ts_np_name (node), NULL, line);
   if (ts_np_is (node, "NumberExpr"))
     return (tok = ts_np_first (node, "NUMBER")) ?
            ts_mk_number (ts_np_textdup (tok), line) : NULL;
@@ -406,13 +487,59 @@ ts_np_stmt (const np_node *node, const char *input)
   if (ts_np_is (node, "Stmt"))
     return ts_np_stmt (np_node_child (node, 0), input);
   line = ts_np_line (node, input);
+  if (ts_np_is (node, "Declaration"))
+    {
+      char *module = ts_np_name (ts_np_first (node, "Name"));
+      char *func = NULL, *symbol = NULL;
+      for (size_t i = 0; i < np_node_child_count (node); i++)
+        {
+          const np_node *ch = np_node_child (node, i);
+          if (ts_np_is (ch, "IDENT"))
+            {
+              if (!func)
+                {
+                  char *part = ts_np_textdup (ch);
+                  if (!part) return NULL;
+                  func = ts_parse_alloc (strlen (part) + 9);
+                  if (!func) { ts_oom (); return NULL; }
+                  sprintf (func, "Declare:%s", part); ts_parse_free (part);
+                }
+              else symbol = ts_np_textdup (ch);
+            }
+        }
+      void *args = ts_args_add (ts_args_new (), ts_mk_argexpr (
+                                  ts_mk_design (7, symbol, NULL, NULL, line)));
+      return ts_mk_exprstmt (ts_mk_unary (module,
+                              ts_mk_callrest (func, args, line), line), line);
+    }
+  if (ts_np_is (node, "AliasDecl") || ts_np_is (node, "DefineDecl"))
+    {
+      char *a = NULL, *b = NULL;
+      size_t i;
+      for (i = 0; i < np_node_child_count (node); i++)
+        {
+          const np_node *ch = np_node_child (node, i);
+          if (ts_np_is (ch, "IDENT") || ts_np_is (ch, "Name"))
+            { if (!a) a = ts_np_name (ch); else b = ts_np_name (ch); }
+        }
+      return ts_mk_design (ts_np_is (node, "AliasDecl") ? 1 : 2,
+                            a, b, NULL, line);
+    }
+  if (ts_np_is (node, "InterfaceDecl") || ts_np_is (node, "SectionDecl"))
+    return ts_mk_design (ts_np_is (node, "InterfaceDecl") ? 3 : 4,
+                          ts_np_name (ts_np_first (node, "IDENT")), NULL,
+                          ts_np_program (ts_np_first (node, "Program"), input), line);
+  if (ts_np_is (node, "ConfigDecl") || ts_np_is (node, "LifetimeDecl"))
+    return ts_mk_design (ts_np_is (node, "ConfigDecl") ? 5 : 6,
+                          ts_np_name (ts_np_first (node, "Name")), NULL,
+                          ts_np_expr (ts_np_first_expr (node), input), line);
   if (ts_np_is (node, "ConstDecl"))
     {
-      name = ts_np_first (node, "IDENT");
+      name = ts_np_first (node, "Name");
       expr = ts_np_first_expr (node);
       if (name && expr)
         {
-          char *text = ts_np_textdup (name);
+          char *text = ts_np_name (name);
           void *rhs = text ? ts_np_expr (expr, input) : NULL;
           return text && rhs ? ts_mk_const (text, rhs, line) : NULL;
         }
@@ -420,11 +547,11 @@ ts_np_stmt (const np_node *node, const char *input)
     }
   if (ts_np_is (node, "AssignStmt"))
     {
-      name = ts_np_first (node, "IDENT");
+      name = ts_np_first (node, "Name");
       expr = ts_np_first_expr (node);
       if (name && expr)
         {
-          char *text = ts_np_textdup (name);
+          char *text = ts_np_name (name);
           void *rhs = text ? ts_np_expr (expr, input) : NULL;
           return text && rhs ? ts_mk_assign (text, rhs, line) : NULL;
         }

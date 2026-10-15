@@ -246,7 +246,42 @@ if(BUILD_TESTING)
     target_compile_options(test_termscript_abi PRIVATE -Wall -Wextra)
   endif()
   add_test(NAME termscript_abi COMMAND test_termscript_abi)
+  add_executable(test_termscript_sections tests/test_termscript_sections.c)
+  target_link_libraries(test_termscript_sections PRIVATE termscript_standalone)
+  if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_termscript_sections PRIVATE -Wall -Wextra)
+  endif()
+  add_test(NAME termscript_sections COMMAND test_termscript_sections)
+  set_tests_properties(termscript_sections PROPERTIES TIMEOUT 30)
+  foreach(kind IN ITEMS ok fail)
+    set(unit ${CMAKE_CURRENT_BINARY_DIR}/section_fixture_${kind}.c)
+    add_custom_command(OUTPUT ${unit}
+      COMMAND $<TARGET_FILE:test_termscript_sections> --emit-${kind} ${unit}
+      DEPENDS test_termscript_sections tests/test_termscript_sections.c
+      VERBATIM)
+    add_executable(test_termscript_sections_c_${kind} ${unit})
+    target_link_libraries(test_termscript_sections_c_${kind} PRIVATE termscript_standalone)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+      target_compile_options(test_termscript_sections_c_${kind} PRIVATE -Wall -Wextra -Werror)
+    endif()
+    add_test(NAME termscript_sections_c_${kind} COMMAND test_termscript_sections_c_${kind})
+  endforeach()
+  add_test(NAME termscript_section_failures COMMAND ${CMAKE_COMMAND}
+    -DDRIVER=$<TARGET_FILE:termscript-driver>
+    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/section-failure-test
+    -DNATIVE=${TERMSCRIPT_NATIVE}
+    -DJITERATI=${TERMSCRIPT_JITERATI}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_section_failures.cmake)
+  set_tests_properties(termscript_section_failures PROPERTIES TIMEOUT 60)
   if(TARGET termscript_stdlib)
+    add_test(NAME termscript_sections_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/termscript/examples/sections.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/section-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE}
+      -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=sections OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
     add_executable(test_termscript_emulator tests/test_termscript_emulator.c)
     add_executable(test_termscript_compositor tests/test_termscript_compositor.c)
     target_compile_definitions(test_termscript_compositor PRIVATE _GNU_SOURCE)

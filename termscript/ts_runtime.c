@@ -218,6 +218,8 @@ typedef struct ts_var
   char *name;
   TS_Value value;
   bool is_const;
+  bool injected;
+  struct ts_var *managed_prev;
   struct ts_var *next;
 } ts_var_t;
 
@@ -240,6 +242,12 @@ struct TS_VM
   size_t nspaths, spaths_cap;
   char **istack;
   size_t nistack, istack_cap;
+  ts_var_t *managed;
+  struct ts_envelope *envelope;
+  bool exit_requested;
+  int64_t exit_status;
+  bool jit;
+  char last_libname[129];
 };
 
 static const TS_Module *
@@ -930,7 +938,125 @@ g_import_path (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
   return TS_OK;
 }
 
+static TS_Status
+g_native_import (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
+                 TS_Value *ret, TS_Error *error)
+{
+  TS_Status st = g_load (vm, ud, argv, argc, ret, error);
+  if (argc == 1 && argv[0].type == TS_STRING)
+    snprintf (vm->last_libname, sizeof vm->last_libname, "%s", argv[0].as.string);
+  if (st == TS_OK && ret->type == TS_NIL)
+    {
+      ts_error_set (error, TS_ERR_NOTFOUND, 0, 0,
+                    "native module '%s' is not registered", argv[0].as.string);
+      return TS_ERR_NOTFOUND;
+    }
+  return st;
+}
+
+static TS_Status
+r_exit (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
+        TS_Value *ret, TS_Error *error)
+{
+  (void) ud; (void) ret;
+  if (ts_check_argc (vm, argv, argc, 1, error) != TS_OK) return TS_ERR_INVAL;
+  int64_t code;
+  if (argv[0].type == TS_INT) code = argv[0].as.integer;
+  else if (argv[0].type == TS_STRING && !strcmp (argv[0].as.string, "EXIT_SUCCESS")) code = 0;
+  else if (argv[0].type == TS_STRING && !strcmp (argv[0].as.string, "EXIT_FAILURE")) code = 1;
+  else { ts_error_set (error, TS_ERR_INVAL, 0, 0, "exit requires an integer or EXIT_SUCCESS/EXIT_FAILURE"); return TS_ERR_INVAL; }
+  vm->exit_requested = true; vm->exit_status = code;
+  ts_error_set (error, TS_ERR_CANCELLED, 0, 0, "requested exit %lld", (long long) code);
+  return TS_ERR_CANCELLED;
+}
+
+/* Error-reporting callbacks accept a format and optional printable values.
+ * They observe the envelope; flow propagation retains the original error. */
+static TS_Status
+r_report (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
+          TS_Value *ret, TS_Error *error)
+{
+  (void) ud;
+  if (!argc || argv[0].type != TS_STRING)
+    { ts_error_set (error, TS_ERR_INVAL, 0, 0, "report requires a format string"); return TS_ERR_INVAL; }
+  /* Formatting is deliberately bounded; no native printf format execution. */
+  char text[TS_ERROR_MSG_SIZE]; size_t len = 0, arg = 1;
+  const char *p = argv[0].as.string;
+  while (*p && len + 1 < sizeof text)
+    {
+      if ((*p == '~' || *p == '%') && p[1] && strchr ("sed", p[1]) && arg < argc)
+        {
+          char *s = NULL;
+          TS_Status st = ts_value_to_string (&argv[arg++], &s, error);
+          if (st != TS_OK) return st;
+          size_t n = strlen (s);
+          if (n > sizeof text - len - 1) n = sizeof text - len - 1;
+          memcpy (text + len, s, n); len += n; free (s); p += 2;
+        }
+      else text[len++] = *p++;
+    }
+  text[len] = '\0';
+  TS_Value value = {0};
+  TS_Status st = ts_value_make_string (&value, text);
+  if (st == TS_OK) st = g_puts (vm, NULL, &value, 1, ret, error);
+  ts_value_free (&value);
+  return st;
+}
+
+static TS_Status r_inject (TS_VM *, void *, const TS_Value *, size_t, TS_Value *, TS_Error *);
+
+static const TS_FuncDef r_funcs[] = {
+  { "Inject", r_inject, NULL },
+  { "Exit", r_exit, NULL }, { "DieGracefully", r_exit, NULL },
+  { "CleanupAndExit", r_exit, NULL }, { "Print", r_report, NULL },
+  { "PrintError", r_report, NULL }, { "ImportError", r_report, NULL },
+  { "RuntimeError", r_report, NULL }, { "IOError", r_report, NULL },
+  { "ConfigurationError", r_report, NULL }, { "ConnectionError", r_report, NULL },
+  { "AuthenticationError", r_report, NULL }, { "PermissionError", r_report, NULL },
+  { "GrammarError", r_report, NULL }, { "ParseError", r_report, NULL }
+};
+static const TS_Module r_module = TS_MODULE_INIT ("R", r_funcs);
+
+static TS_Status
+ts_collection_call (TS_VM *vm, const TS_Module *module, const char *name,
+                    const TS_Value *argv, size_t argc, TS_Value *ret, TS_Error *error)
+{
+  const TS_FuncDef *f = ts_module_find_func (module, name);
+  if (!f)
+    { ts_error_set (error, TS_ERR_NOTFOUND, 0, 0, "collection operation '%s:%s' is unavailable", module ? module->name : "?", name); return TS_ERR_NOTFOUND; }
+  TS_Status st = f->func (vm, f->userdata, argv, argc, ret, error);
+  if (st != TS_OK) ts_value_free (ret);
+  return st;
+}
+
+static TS_Status
+g_collection (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
+              TS_Value *ret, TS_Error *error)
+{
+  bool map = ud != NULL;
+  const char *name = map ? "std.map" : "std.list";
+  const TS_Module *module = ts_vm_lookup (vm, name);
+  if (!module)
+    { ts_error_set (error, TS_ERR_NOTFOUND, 0, 0, "collection literals require registered module '%s'", name); return TS_ERR_NOTFOUND; }
+  if (map && argc % 2)
+    { ts_error_set (error, TS_ERR_INVAL, 0, 0, "map requires key/value pairs"); return TS_ERR_INVAL; }
+  TS_Status st = ts_collection_call (vm, module, "new", NULL, 0, ret, error);
+  for (size_t i = 0; st == TS_OK && i < argc; i += map ? 2 : 1)
+    {
+      TS_Value args[3] = { *ret, argv[i], {0} }, ignored = {0};
+      if (map) args[2] = argv[i + 1];
+      st = ts_collection_call (vm, module, map ? "set" : "push", args,
+                               map ? 3 : 2, &ignored, error);
+      ts_value_free (&ignored);
+    }
+  if (st != TS_OK) ts_value_free (ret);
+  return st;
+}
+static const char ts_map_constructor;
+
 static const TS_FuncDef g_funcs[] = {
+  { "list", g_collection, NULL }, { "map", g_collection, (void *) &ts_map_constructor },
+  { "Import", g_native_import, NULL },
   { "load", g_load, NULL }, { "puts", g_puts, NULL }, { "die", g_die, NULL },
   { "import", g_import, NULL }, { "import_path", g_import_path, NULL },
   { "add", g_add, NULL }, { "sub", g_sub, NULL }, { "mul", g_mul, NULL },
@@ -949,7 +1075,9 @@ static const TS_Module g_module = TS_MODULE_INIT ("G", g_funcs);
 typedef enum
 {
   N_SEQ, N_CONST, N_ASSIGN, N_EXPR_STMT, N_OR, N_VAR, N_CALL,
-  N_LIT_INT, N_LIT_STR, N_LIT_BOOL, N_LIT_NIL, N_WHILE, N_IF
+  N_LIT_INT, N_LIT_STR, N_LIT_BOOL, N_LIT_NIL, N_WHILE, N_IF,
+  N_ALIAS, N_DEFINE, N_INTERFACE, N_SECTION, N_MANAGED, N_BLOCK,
+  N_FLOW, N_FIELD, N_NOT
 } node_kind_t;
 
 typedef struct dt_arg
@@ -960,6 +1088,7 @@ typedef struct dt_arg
   char *string;
   int tag; /* 0=name, 1=number, 2=string, 3=bool, 4=nil. */
   bool boolean;
+  struct dt_node *expr; /* tag 5: owned general expression. */
 } ts_arg_t;
 
 typedef struct dt_node
@@ -1080,7 +1209,8 @@ ts_parse_keep_tree (const ts_node_t *n)
       ts_parse_keep (n->name); ts_parse_keep (n->module);
       ts_parse_keep (n->func); ts_parse_keep (n->string); ts_parse_keep (n->args);
       for (size_t i = 0; i < n->nargs; i++)
-        { ts_parse_keep (n->args[i].name); ts_parse_keep (n->args[i].string); }
+        { ts_parse_keep (n->args[i].name); ts_parse_keep (n->args[i].string);
+          ts_parse_keep_tree (n->args[i].expr); }
       ts_parse_keep_tree (n->first); ts_parse_keep_tree (n->cond);
       ts_parse_keep_tree (n->otherwise); ts_parse_keep_tree (n->lhs);
       if (n->kind != N_SEQ) ts_parse_keep_tree (n->rhs);
@@ -1122,6 +1252,7 @@ ts_node_free (ts_node_t *n)
         {
           free (n->args[i].name);
           free (n->args[i].string);
+          ts_node_free (n->args[i].expr);
         }
       free (n->args);
       free (n->string);
@@ -1322,6 +1453,7 @@ ts_arg_free (ts_arg_t *a)
     return;
   free (a->name);
   free (a->string);
+  ts_node_free (a->expr);
   free (a);
 }
 
@@ -1335,6 +1467,7 @@ ts_args_free_all (ts_args_t *ac)
     {
       free (ac->v[i].name);
       free (ac->v[i].string);
+      ts_node_free (ac->v[i].expr);
     }
   free (ac->v);
   free (ac);
@@ -1465,7 +1598,8 @@ static bool
 ts_reserved (const char *tok)
 {
   static const char *const words[] = {
-    "or", "do", "end", "else", "while", "if", "const", NULL
+    "or", "do", "then", "end", "else", "while", "if", "const",
+    "config", "lifetime", "not", NULL
   };
   size_t i;
   for (i = 0; words[i]; i++)
@@ -1907,15 +2041,73 @@ ts_try_parse (const char *input, bool *oom)
   return r;
 }
 
+#include "ts_sections_front.inc"
+
+/* A bounded source-loading preflight, not a token stream for the parser.
+ * Strings/comments do not contribute structural nesting. NovoParse remains
+ * the sole syntax parser; malformed delimiters are diagnosed there. */
+static TS_Status
+ts_source_limits (const char *source, TS_Error *error)
+{
+  size_t size = strnlen (source, TS_MAX_SOURCE_SIZE);
+  if (size == TS_MAX_SOURCE_SIZE)
+    { ts_error_set (error, TS_ERR_LIMIT, 0, size, "Termscript source exceeds 1 MiB"); return TS_ERR_LIMIT; }
+  unsigned delimiters = 0, blocks = 0, operators = 0;
+  const char *p = source;
+  char previous = 0;
+  while (*p)
+    {
+      if (isspace ((unsigned char) *p)) { p++; continue; }
+      if (*p == '#') { while (*p && *p != '\n') p++; continue; }
+      if (*p == '"')
+        {
+          p++;
+          while (*p && *p != '"')
+            { if (*p == '\\' && p[1]) p += 2; else p++; }
+          if (*p) p++;
+          previous = '"'; continue;
+        }
+      if (strchr ("([{", *p)) delimiters++;
+      else if (strchr (")]}", *p) && delimiters) delimiters--;
+      else if (*p == ';') operators = 0;
+      if (isalpha ((unsigned char) *p) || *p == '_')
+        {
+          const char *start = p++;
+          while (isalnum ((unsigned char) *p) || *p == '_') p++;
+          size_t n = (size_t) (p - start);
+          if (previous != ':' && previous != '$' && previous != '>')
+            {
+              if ((n == 2 && !memcmp (start, "if", 2)) ||
+                  (n == 5 && !memcmp (start, "while", 5)) ||
+                  (previous == '.' && ((n == 7 && !memcmp (start, "section", 7)) ||
+                                       (n == 9 && !memcmp (start, "interface", 9))))) blocks++;
+              else if (n == 3 && !memcmp (start, "end", 3) && blocks) blocks--;
+              else if (n == 2 && !memcmp (start, "or", 2)) operators++;
+            }
+          previous = 'a';
+        }
+      else { if ((*p == '~' || *p == '=') && p[1] == '>') operators++; previous = *p++; }
+      if (delimiters + blocks > TS_MAX_SYNTAX_NESTING || operators > TS_MAX_EXPR_OPERATORS)
+        { ts_error_set (error, TS_ERR_LIMIT, 0, (size_t) (p - source), "Termscript source nesting/operator limit exceeded"); return TS_ERR_LIMIT; }
+    }
+  return TS_OK;
+}
+
 static TS_Status
 ts_parse_program (const char *source, ts_node_t **out, TS_Error *error)
 {
+  *out = NULL;
+  TS_Status limit = ts_source_limits (source, error);
+  if (limit != TS_OK) return limit;
   bool oom = false;
   void *r = ts_try_parse (source, &oom);
   if (r)
     {
       *out = (ts_node_t *) r;
-      return TS_OK;
+      TS_Status st = ts_lower_sections (*out, error);
+      if (st == TS_ERR_NOMEM) ts_error_set (error, st, ENOMEM, 0, "out of memory lowering sections");
+      if (st != TS_OK) { ts_node_free (*out); *out = NULL; }
+      return st;
     }
   if (oom)
     {
@@ -1957,6 +2149,8 @@ vm_step_budget (TS_VM *vm, TS_Error *error)
 static TS_Status eval_node (TS_VM *vm, ts_node_t *n, TS_Value *out,
                             TS_Error *error);
 static TS_Status exec_list (TS_VM *vm, ts_node_t *list, TS_Error *error);
+static TS_Status eval_flow (TS_VM *, ts_node_t *, TS_Value *, TS_Error *);
+static TS_Status ts_jit_eval_expr (TS_VM *, ts_node_t *, TS_Value *, TS_Error *);
 
 /* Shared call dispatcher: invoke `func` on the module carried by the
  * handle value `modval` (borrowed).  Used by the tree-walking
@@ -1986,9 +2180,15 @@ ts_call_with_handle (TS_VM *vm, const TS_Value *modval, const char *modname,
       return TS_ERR_NOTFOUND;
     }
   ret->type = TS_NIL;
+  snprintf (vm->last_libname, sizeof vm->last_libname, "%s", mod->name);
   st = f->func (vm, f->userdata, argv, argc, ret, error);
   if (st != TS_OK)
-    ts_value_free (ret);
+    {
+      ts_value_free (ret);
+      if (error && error->code == TS_OK)
+        ts_error_set (error, st, 0, line, "native call '%s:%s' failed: %s",
+                      modname, func, ts_status_string (st));
+    }
   return st;
 }
 
@@ -2021,30 +2221,26 @@ eval_call (TS_VM *vm, ts_node_t *n, TS_Value *out, TS_Error *error)
       for (i = 0; i < n->nargs; i++)
         {
           ts_arg_t *a = &n->args[i];
-          if (a->tag == 0)
+          if (a->tag == 5)
             {
-              ts_var_t *vv = vm_lookup (vm, a->name);
-              if (!vv)
+              st = eval_node (vm, a->expr, &argv[i], error);
+              if (st != TS_OK)
                 {
-                  size_t k;
-                  for (k = 0; k < i; k++)
-                    ts_value_release (&argv[k]);
-                  free (argv);
-                  ts_value_release (&modval);
-                  ts_error_set (error, TS_ERR_NOTFOUND, 0, n->line,
-                              "unbound variable '%s'", a->name);
-                  return TS_ERR_NOTFOUND;
+                  for (size_t k = 0; k <= i; k++) ts_value_release (&argv[k]);
+                  free (argv); ts_value_release (&modval); return st;
                 }
-              if (ts_value_copy (&argv[i], &vv->value) != TS_OK)
+            }
+          else if (a->tag == 0)
+            {
+              st = ts_rt_get (vm, a->name, &argv[i], n->line, error);
+              if (st != TS_OK)
                 {
                   size_t k;
                   for (k = 0; k < i; k++)
                     ts_value_release (&argv[k]);
                   free (argv);
                   ts_value_release (&modval);
-                  ts_error_set (error, TS_ERR_NOMEM, ENOMEM, 0,
-                              "out of memory");
-                  return TS_ERR_NOMEM;
+                  return st;
                 }
             }
           else if (a->tag == 1)
@@ -2104,6 +2300,8 @@ eval_node (TS_VM *vm, ts_node_t *n, TS_Value *out, TS_Error *error)
     {
     case N_VAR:
       {
+        if (!strcmp (n->name, "$E"))
+          return ts_rt_get (vm, n->name, out, n->line, error);
         ts_var_t *v = vm_lookup (vm, n->name);
         if (!v)
           {
@@ -2135,7 +2333,22 @@ eval_node (TS_VM *vm, ts_node_t *n, TS_Value *out, TS_Error *error)
       out->type = TS_NIL;
       return TS_OK;
     case N_CALL:
-      return eval_call (vm, n, out, error);
+      return vm->jit ? ts_jit_eval_expr (vm, n, out, error)
+                     : eval_call (vm, n, out, error);
+    case N_BLOCK:
+      out->type = TS_NIL;
+      return exec_list (vm, n->first, error);
+    case N_FIELD:
+      return ts_rt_field (vm, n->name, n->func, out, n->line, error);
+    case N_FLOW:
+      return eval_flow (vm, n, out, error);
+    case N_NOT:
+      {
+        TS_Value v = {0};
+        st = eval_node (vm, n->lhs, &v, error);
+        if (st == TS_OK) ts_value_make_bool (out, !ts_value_truthy (&v));
+        ts_value_free (&v); return st;
+      }
     case N_OR:
       {
         TS_Value lv;
@@ -2162,6 +2375,8 @@ static TS_Status
 vm_define (TS_VM *vm, const char *name, TS_Value *val, bool is_const,
            unsigned line, TS_Error *error)
 {
+  if (!strcmp (name, "$E"))
+    { ts_error_set (error, TS_ERR_INVAL, 0, line, "$E is a reserved flow envelope"); return TS_ERR_INVAL; }
   ts_var_t *v = vm_lookup (vm, name);
   if (v)
     {
@@ -2201,6 +2416,26 @@ vm_define (TS_VM *vm, const char *name, TS_Value *val, bool is_const,
 }
 
 static TS_Status
+r_inject (TS_VM *vm, void *ud, const TS_Value *a, size_t n,
+          TS_Value *ret, TS_Error *error)
+{
+  (void) ud; (void) ret;
+  if (ts_check_argc (vm, a, n, 2, error) != TS_OK) return TS_ERR_INVAL;
+  if (a[0].type != TS_HANDLE || a[1].type != TS_STRING || !a[1].as.string[0])
+    { ts_error_set (error, TS_ERR_INVAL, 0, 0, "Inject requires a handle and a symbol name"); return TS_ERR_INVAL; }
+  ts_var_t *existing = vm_lookup (vm, a[1].as.string);
+  if (existing && existing->value.type == TS_HANDLE && a[0].type == TS_HANDLE &&
+      existing->value.as.handle == a[0].as.handle) return TS_OK;
+  TS_Value value = {0};
+  TS_Status st = ts_value_copy (&value, &a[0]);
+  if (st == TS_OK) st = ts_rt_lifetime_set (vm, a[1].as.string, &value, 0, error);
+  if (st == TS_OK) vm_lookup (vm, a[1].as.string)->injected = true;
+  ts_value_free (&value); return st;
+}
+
+#include "ts_sections_runtime.inc"
+
+static TS_Status
 exec_list (TS_VM *vm, ts_node_t *list, TS_Error *error)
 {
   ts_node_t *s;
@@ -2213,14 +2448,15 @@ exec_list (TS_VM *vm, ts_node_t *list, TS_Error *error)
         {
         case N_CONST:
         case N_ASSIGN:
+        case N_MANAGED:
           {
             TS_Value v;
             v.type = TS_NIL;
             st = eval_node (vm, s->rhs, &v, error);
             if (st != TS_OK)
               return st;
-            st = vm_define (vm, s->name, &v, s->kind == N_CONST, s->line,
-                            error);
+            st = s->kind == N_MANAGED ? ts_rt_lifetime_set (vm, s->name, &v, s->line, error)
+                 : vm_define (vm, s->name, &v, s->kind == N_CONST, s->line, error);
             ts_value_release (&v);
             if (st != TS_OK)
               return st;
@@ -2303,6 +2539,8 @@ ts_rt_get (TS_VM *vm, const char *name, TS_Value *out, unsigned line,
       ts_error_set (error, TS_ERR_INVAL, 0, line, "bad arguments");
       return TS_ERR_INVAL;
     }
+  if (!strcmp (name, "$E"))
+    return ts_envelope_value (vm, out, line, error);
   v = vm_lookup (vm, name);
   if (!v)
     {
@@ -2370,7 +2608,14 @@ vm_bind_core (TS_VM *vm, TS_Error *error)
     }
   v.type = TS_HANDLE;
   v.as.handle = h;
-  return vm_define (vm, "G", &v, true, 0, error);
+  TS_Status st = vm_define (vm, "G", &v, true, 0, error);
+  ts_value_free (&v);
+  if (st != TS_OK) return st;
+  h = ts_handle_new_module (&r_module);
+  if (!h) { ts_error_set (error, TS_ERR_NOMEM, ENOMEM, 0, "out of memory"); return TS_ERR_NOMEM; }
+  v.type = TS_HANDLE; v.as.handle = h;
+  st = vm_define (vm, "R", &v, true, 0, error);
+  ts_value_free (&v); return st;
 }
 
 TS_VM *
@@ -2409,6 +2654,7 @@ ts_vm_free (TS_VM *vm)
   ts_var_t *v;
   if (!vm)
     return;
+  ts_rt_finish (vm, TS_OK, NULL);
   v = vm->vars;
   while (v)
     {
@@ -2437,6 +2683,8 @@ static void
 vm_reset_run (TS_VM *vm)
 {
   vm->steps = 0;
+  vm->exit_requested = false;
+  vm->exit_status = 0;
   vm->olen = 0;
   if (vm->output)
     vm->output[0] = '\0';
@@ -2456,6 +2704,7 @@ ts_exec_source (TS_VM *vm, const char *source, bool reset, TS_Error *error)
   if (reset)
     vm_reset_run (vm);
   st = exec_list (vm, prog->first, error);
+  if (reset) st = ts_rt_finish (vm, st, error);
   ts_node_free (prog);
   return st;
 }
@@ -2571,6 +2820,16 @@ ts_jit_i32_arg (TS_VM *vm, const ts_arg_t *arg, int32_t *out,
     }
   if (arg->tag == 1)
     value = arg->number;
+  else if (arg->tag == 5)
+    {
+      TS_Value v = {0};
+      TS_Status st = eval_node (vm, arg->expr, &v, error);
+      if (st == TS_OK && v.type != TS_INT)
+        { ts_error_set (error, TS_ERR_UNSUPPORTED, 0, 0, "Jiterati arithmetic requires integers"); st = TS_ERR_UNSUPPORTED; }
+      value = v.type == TS_INT ? v.as.integer : 0;
+      ts_value_free (&v);
+      if (st != TS_OK) return st;
+    }
   else if (arg->tag == 0)
     {
       ts_var_t *var = vm_lookup (vm, arg->name);
@@ -2812,84 +3071,6 @@ ts_jit_eval_expr (TS_VM *vm, ts_node_t *n, TS_Value *out, TS_Error *error)
 }
 
 static TS_Status
-ts_jit_exec_list (TS_VM *vm, ts_node_t *list, TS_Error *error)
-{
-  ts_node_t *s;
-  for (s = list; s; s = s->next)
-    {
-      TS_Status st;
-      if (vm_step_budget (vm, error) != TS_OK)
-        return TS_ERR_LIMIT;
-      switch (s->kind)
-        {
-        case N_CONST:
-        case N_ASSIGN:
-          {
-            TS_Value v;
-            v.type = TS_NIL;
-            st = ts_jit_eval_expr (vm, s->rhs, &v, error);
-            if (st != TS_OK)
-              return st;
-            st = vm_define (vm, s->name, &v, s->kind == N_CONST,
-                            s->line, error);
-            ts_value_release (&v);
-            if (st != TS_OK)
-              return st;
-          }
-          break;
-        case N_EXPR_STMT:
-            {
-              TS_Value v;
-              v.type = TS_NIL;
-              st = ts_jit_eval_expr (vm, s->rhs, &v, error);
-              ts_value_release (&v);
-              if (st != TS_OK)
-                return st;
-            }
-          break;
-        case N_WHILE:
-          for (;;)
-            {
-              TS_Value c;
-              bool go;
-              c.type = TS_NIL;
-              st = ts_jit_eval_expr (vm, s->cond, &c, error);
-              if (st != TS_OK)
-                return st;
-              go = ts_value_truthy (&c);
-              ts_value_release (&c);
-              if (!go)
-                break;
-              st = ts_jit_exec_list (vm, s->first, error);
-              if (st != TS_OK)
-                return st;
-            }
-          break;
-        case N_IF:
-          {
-            TS_Value c;
-            bool go;
-            c.type = TS_NIL;
-            st = ts_jit_eval_expr (vm, s->cond, &c, error);
-            if (st != TS_OK)
-              return st;
-            go = ts_value_truthy (&c);
-            ts_value_release (&c);
-            st = ts_jit_exec_list (vm, go ? s->first : s->otherwise, error);
-            if (st != TS_OK)
-              return st;
-          }
-          break;
-        default:
-          ts_error_set (error, TS_ERR_UNSUPPORTED, 0, s->line,
-                        "Jiterati backend does not support this statement");
-          return TS_ERR_UNSUPPORTED;
-        }
-    }
-  return TS_OK;
-}
-
-static TS_Status
 ts_vm_run_jiterati (TS_VM *vm, const char *source, char **output,
                    TS_Error *error)
 {
@@ -2910,7 +3091,10 @@ ts_vm_run_jiterati (TS_VM *vm, const char *source, char **output,
   if (st != TS_OK)
     return st;
   vm_reset_run (vm);
-  st = ts_jit_exec_list (vm, prog->first, error);
+  vm->jit = true;
+  st = exec_list (vm, prog->first, error);
+  vm->jit = false;
+  st = ts_rt_finish (vm, st, error);
   ts_node_free (prog);
   if (st != TS_OK)
     return st;
@@ -3281,19 +3465,6 @@ ts_cg_stack_has (char **stack, size_t nstack, const char *path)
   return false;
 }
 
-/* Free one statement node without touching its `next` link. */
-static void
-ts_cg_free_one (ts_node_t *s)
-{
-  ts_node_t *nx;
-  if (!s)
-    return;
-  nx = s->next;
-  s->next = NULL;
-  ts_node_free (s);
-  (void) nx;
-}
-
 static bool
 ts_cg_is_bare_g_call (ts_node_t *s, const char *func, const char **str_out)
 {
@@ -3326,6 +3497,11 @@ ts_cg_inline_chain (ts_node_t **head, struct ts_cg_paths *paths,
     {
       ts_node_t *s = *pp;
       const char *str = NULL;
+      if (s->kind == N_EXPR_STMT && s->rhs && s->rhs->kind == N_BLOCK)
+        {
+          ts_cg_inline_chain (&s->rhs->first, paths, stack, nstack, depth);
+          pp = &s->next; continue;
+        }
       if (s->kind == N_WHILE)
         {
           ts_cg_inline_chain (&s->first, paths, stack, nstack, depth);
@@ -3357,9 +3533,7 @@ ts_cg_inline_chain (ts_node_t **head, struct ts_cg_paths *paths,
       {
         char *found = ts_cg_resolve (paths, str);
         char *text = NULL;
-        bool oom = false;
-        void *r = NULL;
-        ts_node_t *prog = NULL, *chain = NULL, *tail = NULL;
+        ts_node_t *prog = NULL, *chain = NULL;
         TS_Error dummy;
         if (!found || ts_cg_stack_has (stack, nstack, found))
           {
@@ -3375,9 +3549,9 @@ ts_cg_inline_chain (ts_node_t **head, struct ts_cg_paths *paths,
             pp = &s->next; /* Too large / unreadable: run time reports. */
             continue;
           }
-        r = ts_try_parse (text, &oom);
+        TS_Status parse_status = ts_parse_program (text, &prog, &dummy);
         free (text);
-        if (!r || oom)
+        if (parse_status != TS_OK)
           {
             /* Unparsable companion: leave the run-time import, which
              * fails identically when executed. */
@@ -3385,29 +3559,17 @@ ts_cg_inline_chain (ts_node_t **head, struct ts_cg_paths *paths,
             pp = &s->next;
             continue;
           }
-        prog = (ts_node_t *) r;
         stack[nstack] = found;
         ts_cg_inline_chain (&prog->first, paths, stack, nstack + 1,
                             depth + 1);
         chain = prog->first;
         prog->first = NULL;
         ts_node_free (prog);
-        if (!chain)
-          {
-            /* Empty companion: the import is a silent no-op. */
-            *pp = s->next;
-            s->next = NULL;
-            ts_cg_free_one (s);
-            free (found);
-            continue;
-          }
-        for (tail = chain; tail->next; tail = tail->next)
-          ;
-        tail->next = s->next;
-        s->next = NULL;
-        ts_cg_free_one (s);
-        *pp = chain;
-        pp = &tail->next;
+        /* Keep the import statement/expression charge, including empty files.
+         * The compiled block executes in the caller's managed lifetime. */
+        s->rhs->kind = N_BLOCK;
+        s->rhs->first = chain;
+        pp = &s->next;
         free (found);
       }
     }
@@ -3420,12 +3582,13 @@ typedef struct
   size_t len;
   size_t cap;
   unsigned tmp;
+  unsigned failure; /* 0: unit failure; otherwise scoped cleanup label. */
   bool dt_mode;
   bool failed;
 } ts_cg_t;
 
 static void
-ts_cg_put (ts_cg_t *g, const char *s, size_t n)
+ts_cg_raw_put (ts_cg_t *g, const char *s, size_t n)
 {
   if (g->failed)
     return;
@@ -3447,6 +3610,26 @@ ts_cg_put (ts_cg_t *g, const char *s, size_t n)
   memcpy (g->buf + g->len, s, n);
   g->len += n;
   g->buf[g->len] = '\0';
+}
+
+/* Redirect code branches to the nearest owned-value cleanup. Literal
+ * payloads are emitted bytewise by ts_cg_cstr and are never rewritten. */
+static void
+ts_cg_put (ts_cg_t *g, const char *s, size_t n)
+{
+  const char needle[] = "goto fail;";
+  if (!g->failure) { ts_cg_raw_put (g, s, n); return; }
+  size_t start = 0;
+  for (size_t i = 0; i + sizeof needle - 1 <= n; i++)
+    if (!memcmp (s + i, needle, sizeof needle - 1))
+      {
+        char jump[64];
+        int len = snprintf (jump, sizeof jump, "goto ts_fail%u;", g->failure);
+        ts_cg_raw_put (g, s + start, i - start);
+        ts_cg_raw_put (g, jump, (size_t) len);
+        i += sizeof needle - 2; start = i + 1;
+      }
+  ts_cg_raw_put (g, s + start, n - start);
 }
 
 static void
@@ -3539,6 +3722,11 @@ ts_cg_temp (ts_cg_t *g)
 #define CG_TRUTHY(g) ((g)->dt_mode ? "dt_rt_truthy" : "ts_value_truthy")
 #define CG_ERRSET(g) ((g)->dt_mode ? "dt_error_set" : "ts_error_set")
 #define CG_PARSE(g) ((g)->dt_mode ? "DT_ERR_PARSE" : "TS_ERR_PARSE")
+#define CG_LIFETIME(g) ((g)->dt_mode ? "dt_rt_lifetime_set" : "ts_rt_lifetime_set")
+#define CG_FIELD(g) ((g)->dt_mode ? "dt_rt_field" : "ts_rt_field")
+#define CG_ENTER(g) ((g)->dt_mode ? "dt_rt_flow_enter" : "ts_rt_flow_enter")
+#define CG_LEAVE(g) ((g)->dt_mode ? "dt_rt_flow_leave" : "ts_rt_flow_leave")
+#define CG_FINISH(g) ((g)->dt_mode ? "dt_rt_finish" : "ts_rt_finish")
 
 static void ts_cg_list (ts_cg_t *g, ts_node_t *list);
 static void ts_cg_expr (ts_cg_t *g, ts_node_t *n, const char *out);
@@ -3549,7 +3737,16 @@ static void
 ts_cg_arg (ts_cg_t *g, ts_arg_t *a, const char *out, unsigned line,
            const char *cleanup)
 {
-  if (a->tag == 0)
+  if (a->tag == 5)
+    {
+      unsigned label = ts_cg_temp (g) + 1, parent = g->failure;
+      g->failure = label;
+      ts_cg_expr (g, a->expr, out);
+      g->failure = parent;
+      ts_cg_fmt (g, "goto ts_arg_done%u;\nts_fail%u:\n%s (&%s); %s\nts_arg_done%u:;\n",
+                 label, label, CG_FREE (g), out, cleanup, label);
+    }
+  else if (a->tag == 0)
     {
       ts_cg_fmt (g, "if (%s (%s, \"%s\", &%s, %u, %s) != %s) { %s }\n",
                  CG_GET (g), CG_VMN (g), a->name, out, line, CG_ERN (g),
@@ -3605,8 +3802,6 @@ ts_cg_call (ts_cg_t *g, ts_node_t *n, const char *out)
   ts_cg_fmt (g, "%s.type = %s; %s.type = %s;\n", mv,
              g->dt_mode ? "DT_TERM_NIL" : "TS_NIL", rv,
              g->dt_mode ? "DT_TERM_NIL" : "TS_NIL");
-  ts_cg_fmt (g, "if (%s (%s, %s) != %s) goto fail;\n", CG_STEP (g),
-             CG_VMN (g), CG_ERN (g), CG_OK (g));
   ts_cg_fmt (g, "if (%s (%s, \"%s\", &%s, %u, %s) != %s) goto fail;\n",
              CG_GET (g), CG_VMN (g), n->module, mv, n->line, CG_ERN (g),
              CG_OK (g));
@@ -3639,6 +3834,9 @@ ts_cg_call (ts_cg_t *g, ts_node_t *n, const char *out)
 static void
 ts_cg_expr (ts_cg_t *g, ts_node_t *n, const char *out)
 {
+  if (!n) return; /* Destination starts as nil. */
+  ts_cg_fmt (g, "if (%s (%s, %s) != %s) goto fail;\n", CG_STEP (g),
+             CG_VMN (g), CG_ERN (g), CG_OK (g));
   switch (n->kind)
     {
     case N_VAR:
@@ -3673,6 +3871,57 @@ ts_cg_expr (ts_cg_t *g, ts_node_t *n, const char *out)
     case N_CALL:
       ts_cg_call (g, n, out);
       break;
+    case N_BLOCK:
+      ts_cg_list (g, n->first);
+      break;
+    case N_FIELD:
+      ts_cg_fmt (g, "if (%s (%s, ", CG_FIELD (g), CG_VMN (g));
+      ts_cg_cstr (g, n->name); ts_cg_str (g, ", "); ts_cg_cstr (g, n->func);
+      ts_cg_fmt (g, ", &%s, %u, %s) != %s) goto fail;\n", out, n->line, CG_ERN (g), CG_OK (g));
+      break;
+    case N_NOT:
+      {
+        unsigned m = ts_cg_temp (g);
+        char v[64]; snprintf (v, sizeof v, "ts_not%u", m);
+        ts_cg_fmt (g, "{ %s %s = {0};\n", ts_cg_V (g), v);
+        ts_cg_expr (g, n->lhs, v);
+        ts_cg_fmt (g, "%s.type = %s; %s.as.boolean = !%s (&%s); %s (&%s); }\n",
+                   out, g->dt_mode ? "DT_TERM_BOOL" : "TS_BOOL", out,
+                   CG_TRUTHY (g), v, CG_FREE (g), v);
+      }
+      break;
+    case N_FLOW:
+      {
+        unsigned m = ts_cg_temp (g) + 1, parent = g->failure;
+        unsigned callback = ts_cg_temp (g) + 1;
+        char v[64], ignored[64];
+        snprintf (v, sizeof v, "ts_flow%u", m);
+        snprintf (ignored, sizeof ignored, "ts_ignore%u", m);
+        ts_cg_fmt (g, "{ %s %s = {0}, %s = {0}; %s ts_original%u = %s, ts_status%u = %s;\n",
+                   ts_cg_V (g), v, ignored, ts_cg_S (g), m, CG_OK (g), m, CG_OK (g));
+        g->failure = m;
+        ts_cg_expr (g, n->lhs, v);
+        g->failure = parent;
+        ts_cg_fmt (g, "goto ts_flow_join%u;\nts_fail%u:\nts_original%u = %s->code;\nts_flow_join%u:;\n",
+                   m, m, m, CG_ERN (g), m);
+        ts_cg_fmt (g, "if (%s (%s, &%s, ts_original%u, %s) != %s) { %s (&%s); goto fail; }\n",
+                   CG_ENTER (g), CG_VMN (g), v, m, CG_ERN (g), CG_OK (g), CG_FREE (g), v);
+        ts_cg_fmt (g, "if (ts_original%u == %s) {\n", m, CG_OK (g));
+        g->failure = callback;
+        ts_cg_expr (g, n->rhs, ignored);
+        ts_cg_str (g, "} else {\n");
+        ts_cg_expr (g, n->first, ignored);
+        ts_cg_fmt (g, "%s (&%s);\n", CG_FREE (g), ignored);
+        ts_cg_expr (g, n->otherwise, ignored);
+        g->failure = parent;
+        ts_cg_fmt (g, "}\ngoto ts_callback_join%u;\nts_fail%u:\nts_status%u = %s->code;\nts_callback_join%u:;\n",
+                   m, callback, m, CG_ERN (g), m);
+        ts_cg_fmt (g, "%s (&%s); ts_status%u = %s (%s, ts_status%u, %s);\n",
+                   CG_FREE (g), ignored, m, CG_LEAVE (g), CG_VMN (g), m, CG_ERN (g));
+        ts_cg_fmt (g, "if (ts_status%u != %s) { %s (&%s); goto fail; }\n%s = %s; %s.type = 0; }\n",
+                   m, CG_OK (g), CG_FREE (g), v, out, v, v);
+      }
+      break;
     case N_OR:
       {
         unsigned m = ts_cg_temp (g);
@@ -3703,6 +3952,7 @@ ts_cg_stmt (ts_cg_t *g, ts_node_t *s)
     {
     case N_CONST:
     case N_ASSIGN:
+    case N_MANAGED:
       {
         unsigned m = ts_cg_temp (g);
         bool is_const = s->kind == N_CONST;
@@ -3715,10 +3965,15 @@ ts_cg_stmt (ts_cg_t *g, ts_node_t *s)
           snprintf (slot, sizeof slot, "ts_e%u", m);
           ts_cg_expr (g, s->rhs, slot);
         }
-        ts_cg_fmt (g, "if (%s (%s, \"%s\", &ts_e%u, %s, %u, %s) != %s) { %s (&ts_e%u); goto fail; }\n",
-                   CG_SET (g), CG_VMN (g), s->name, m,
-                   is_const ? "true" : "false", s->line, CG_ERN (g),
-                   CG_OK (g), CG_FREE (g), m);
+        if (s->kind == N_MANAGED)
+          ts_cg_fmt (g, "if (%s (%s, \"%s\", &ts_e%u, %u, %s) != %s) { %s (&ts_e%u); goto fail; }\n",
+                     CG_LIFETIME (g), CG_VMN (g), s->name, m, s->line,
+                     CG_ERN (g), CG_OK (g), CG_FREE (g), m);
+        else
+          ts_cg_fmt (g, "if (%s (%s, \"%s\", &ts_e%u, %s, %u, %s) != %s) { %s (&ts_e%u); goto fail; }\n",
+                     CG_SET (g), CG_VMN (g), s->name, m,
+                     is_const ? "true" : "false", s->line, CG_ERN (g),
+                     CG_OK (g), CG_FREE (g), m);
         ts_cg_str (g, "}\n");
       }
       break;
@@ -3740,11 +3995,11 @@ ts_cg_stmt (ts_cg_t *g, ts_node_t *s)
     case N_WHILE:
       {
         unsigned m = ts_cg_temp (g);
+        ts_cg_fmt (g, "if (%s (%s, %s) != %s) goto fail;\n", CG_STEP (g),
+                   CG_VMN (g), CG_ERN (g), CG_OK (g));
         ts_cg_fmt (g, "for (;;) {\n%s ts_c%u; ts_c%u.type = %s;\n",
                    ts_cg_V (g), m, m,
                    g->dt_mode ? "DT_TERM_NIL" : "TS_NIL");
-        ts_cg_fmt (g, "if (%s (%s, %s) != %s) goto fail;\n", CG_STEP (g),
-                   CG_VMN (g), CG_ERN (g), CG_OK (g));
         {
           char slot[64];
           snprintf (slot, sizeof slot, "ts_c%u", m);
@@ -3877,9 +4132,10 @@ ts_cg_emit (TS_VM *vm, ts_node_t *prog, const char *unit_name, bool dt_mode,
   /* Keeps `fail` referenced even for empty programs (avoids an
    * unused-label warning under -Wall). */
   ts_cg_str (&g, "if (0) goto fail;\n");
-  ts_cg_fmt (&g, "return %s;\nfail:\nreturn %s->code != %s ? %s->code : %s;\n}\n\n",
-             CG_OK (&g), CG_ERN (&g), CG_OK (&g), CG_ERN (&g),
-             CG_NOMEM (&g));
+  ts_cg_fmt (&g, "return %s (%s, %s, %s);\nfail:\nreturn %s (%s, %s->code != %s ? %s->code : %s, %s);\n}\n\n",
+             CG_FINISH (&g), CG_VMN (&g), CG_OK (&g), CG_ERN (&g),
+             CG_FINISH (&g), CG_VMN (&g), CG_ERN (&g), CG_OK (&g),
+             CG_ERN (&g), CG_NOMEM (&g), CG_ERN (&g));
   ts_cg_str (&g, "int\nmain (int argc, char **argv)\n{\n");
   if (dt_mode)
     {

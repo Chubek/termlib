@@ -6,6 +6,7 @@ typedef struct
   ts_cg_t body, data, slots, cleanup;
   unsigned id;
   bool dt;
+  unsigned failure;
 } ts_qg;
 
 static unsigned
@@ -40,7 +41,16 @@ static void
 ts_qcheck (ts_qg *g, unsigned result)
 {
   unsigned label = ts_qid (g);
-  ts_cg_fmt (&g->body, "jnz %%r%u, @fail, @b%u\n@b%u\n", result, label, label);
+  if (g->failure)
+    ts_cg_fmt (&g->body, "jnz %%r%u, @b%u, @b%u\n@b%u\n", result, g->failure, label, label);
+  else ts_cg_fmt (&g->body, "jnz %%r%u, @fail, @b%u\n@b%u\n", result, label, label);
+}
+
+static void
+ts_qfail (ts_qg *g)
+{
+  if (g->failure) ts_cg_fmt (&g->body, "jmp @b%u\n", g->failure);
+  else ts_cg_str (&g->body, "jmp @fail\n");
 }
 
 static void
@@ -82,8 +92,9 @@ ts_qlit (ts_qg *g, unsigned out, int type, int64_t number, const char *str)
           unsigned msg = ts_qstr (g, "out of memory");
           ts_cg_fmt (&g->body, "%%r%u =w call $ts_value_make_string(l %%v%u, l $s%u)\n", r, out, s);
           ts_cg_fmt (&g->body, "jnz %%r%u, @b%u, @b%u\n@b%u\n", r, bad, ok, bad);
-          ts_cg_fmt (&g->body, "call $ts_error_set(l %%err, w %d, w %d, l 0, l $s%u, ...)\njmp @fail\n@b%u\n",
-                     TS_ERR_NOMEM, ENOMEM, msg, ok);
+          ts_cg_fmt (&g->body, "call $ts_error_set(l %%err, w %d, w %d, l 0, l $s%u, ...)\n",
+                     TS_ERR_NOMEM, ENOMEM, msg);
+          ts_qfail (g); ts_cg_fmt (&g->body, "@b%u\n", ok);
           return;
         }
       ts_qcheck (g, r);
@@ -102,6 +113,8 @@ static void ts_qlist (ts_qg *, ts_node_t *);
 static void
 ts_qexpr (ts_qg *g, ts_node_t *n, unsigned out)
 {
+  if (!n) return;
+  ts_qstep (g);
   switch (n->kind)
     {
     case N_VAR: ts_qget (g, n->name, out, n->line); break;
@@ -109,6 +122,54 @@ ts_qexpr (ts_qg *g, ts_node_t *n, unsigned out)
     case N_LIT_STR: ts_qlit (g, out, TS_STRING, 0, n->string); break;
     case N_LIT_BOOL: ts_qlit (g, out, TS_BOOL, n->boolean, NULL); break;
     case N_LIT_NIL: ts_qlit (g, out, TS_NIL, 0, NULL); break;
+    case N_BLOCK: ts_qlist (g, n->first); break;
+    case N_FIELD:
+      {
+        unsigned name = ts_qstr (g, n->name), field = ts_qstr (g, n->func), r = ts_qid (g);
+        ts_cg_fmt (&g->body, "%%r%u =w call $%s(l %%vm, l $s%u, l $s%u, l %%v%u, w %u, l %%err)\n",
+                   r, ts_qfn (g, "ts_rt_field", "dt_rt_field"), name, field, out, n->line);
+        ts_qcheck (g, r);
+      }
+      break;
+    case N_NOT:
+      {
+        unsigned v = ts_qslot (g), r = ts_qid (g), p = ts_qid (g);
+        ts_qexpr (g, n->lhs, v);
+        ts_cg_fmt (&g->body, "%%truth%u =w call $%s(l %%v%u)\n%%bool%u =w and %%truth%u, 255\n%%not%u =w ceqw %%bool%u, 0\nstorew %d, %%v%u\n%%p%u =l add %%v%u, %zu\nstoreb %%not%u, %%p%u\n",
+                   r, ts_qfn (g, "ts_value_truthy", "dt_rt_truthy"), v, r, r,
+                   r, r, TS_BOOL, out, p, out, offsetof (TS_Value, as), r, p);
+        ts_qfree (g, v);
+      }
+      break;
+    case N_FLOW:
+      {
+        unsigned parent = g->failure, bad = ts_qid (g), join = ts_qid (g);
+        unsigned yes = ts_qid (g), no = ts_qid (g), cb_bad = ts_qid (g), cb_join = ts_qid (g);
+        unsigned original = ts_qid (g), status = ts_qid (g), ignored = ts_qslot (g), r;
+        ts_cg_fmt (&g->slots, "%%original%u =l alloc4 4\n%%status%u =l alloc4 4\n", original, status);
+        ts_cg_fmt (&g->body, "storew 0, %%original%u\nstorew 0, %%status%u\n", original, status);
+        g->failure = bad; ts_qexpr (g, n->lhs, out); g->failure = parent;
+        ts_cg_fmt (&g->body, "jmp @b%u\n@b%u\n%%error%u =w loadw %%err\nstorew %%error%u, %%original%u\njmp @b%u\n@b%u\n",
+                   join, bad, bad, bad, original, join, join);
+        r = ts_qid (g);
+        ts_cg_fmt (&g->body, "%%orig%u =w loadw %%original%u\n%%r%u =w call $%s(l %%vm, l %%v%u, w %%orig%u, l %%err)\n",
+                   original, original, r, ts_qfn (g, "ts_rt_flow_enter", "dt_rt_flow_enter"), out, original);
+        ts_qcheck (g, r);
+        ts_cg_fmt (&g->body, "jnz %%orig%u, @b%u, @b%u\n@b%u\n", original, no, yes, yes);
+        g->failure = cb_bad;
+        ts_qexpr (g, n->rhs, ignored);
+        ts_cg_fmt (&g->body, "jmp @b%u\n@b%u\n", cb_join, no);
+        ts_qexpr (g, n->first, ignored); ts_qfree (g, ignored);
+        ts_qexpr (g, n->otherwise, ignored);
+        g->failure = parent;
+        ts_cg_fmt (&g->body, "jmp @b%u\n@b%u\n%%error%u =w loadw %%err\nstorew %%error%u, %%status%u\njmp @b%u\n@b%u\n",
+                   cb_join, cb_bad, cb_bad, cb_bad, status, cb_join, cb_join);
+        ts_qfree (g, ignored); r = ts_qid (g);
+        ts_cg_fmt (&g->body, "%%st%u =w loadw %%status%u\n%%r%u =w call $%s(l %%vm, w %%st%u, l %%err)\n",
+                   status, status, r, ts_qfn (g, "ts_rt_flow_leave", "dt_rt_flow_leave"), status);
+        ts_qcheck (g, r);
+      }
+      break;
     case N_OR:
       {
         unsigned r = ts_qid (g), rhs = ts_qid (g), end = ts_qid (g);
@@ -138,12 +199,12 @@ ts_qexpr (ts_qg *g, ts_node_t *n, unsigned out)
             ts_cg_fmt (&g->cleanup, "call $%s(l %%v%u)\n",
                        ts_qfn (g, "ts_value_free", "dt_termvalue_free"), av[i]);
           }
-        ts_qstep (g);
         ts_qget (g, n->module, mod, n->line);
         for (i = 0; i < n->nargs; i++)
           {
             ts_arg_t *a = &n->args[i];
-            if (!a->tag) ts_qget (g, a->name, av[i], n->line);
+            if (a->tag == 5) ts_qexpr (g, a->expr, av[i]);
+            else if (!a->tag) ts_qget (g, a->name, av[i], n->line);
             else ts_qlit (g, av[i], a->tag == 1 ? TS_INT : a->tag == 2 ? TS_STRING : a->tag == 3 ? TS_BOOL : TS_NIL,
                           a->tag == 1 ? a->number : a->boolean, a->string);
           }
@@ -169,8 +230,9 @@ ts_qlist (ts_qg *g, ts_node_t *s)
       if (s->kind == N_WHILE || s->kind == N_IF)
         {
           unsigned top = ts_qid (g), yes = ts_qid (g), no = ts_qid (g), end = ts_qid (g);
+          ts_qstep (g);
           ts_cg_fmt (&g->body, "jmp @b%u\n@b%u\n", top, top);
-          ts_qstep (g); ts_qexpr (g, s->cond, v); r = ts_qid (g);
+          ts_qexpr (g, s->cond, v); r = ts_qid (g);
           ts_cg_fmt (&g->body, "%%bool%u =w call $%s(l %%v%u)\n%%r%u =w and %%bool%u, 255\n", r,
                      ts_qfn (g, "ts_value_truthy", "dt_rt_truthy"), v, r, r);
           ts_qfree (g, v);
@@ -183,12 +245,15 @@ ts_qlist (ts_qg *g, ts_node_t *s)
       else
         {
           ts_qstep (g); ts_qexpr (g, s->rhs, v);
-          if (s->kind == N_CONST || s->kind == N_ASSIGN)
+          if (s->kind == N_CONST || s->kind == N_ASSIGN || s->kind == N_MANAGED)
             {
               unsigned name = ts_qstr (g, s->name);
               r = ts_qid (g);
-              ts_cg_fmt (&g->body, "%%r%u =w call $%s(l %%vm, l $s%u, l %%v%u, w %u, w %u, l %%err)\n",
-                         r, ts_qfn (g, "ts_rt_set", "dt_rt_set"), name, v, s->kind == N_CONST, s->line);
+              if (s->kind == N_MANAGED)
+                ts_cg_fmt (&g->body, "%%r%u =w call $%s(l %%vm, l $s%u, l %%v%u, w %u, l %%err)\n",
+                           r, ts_qfn (g, "ts_rt_lifetime_set", "dt_rt_lifetime_set"), name, v, s->line);
+              else ts_cg_fmt (&g->body, "%%r%u =w call $%s(l %%vm, l $s%u, l %%v%u, w %u, w %u, l %%err)\n",
+                             r, ts_qfn (g, "ts_rt_set", "dt_rt_set"), name, v, s->kind == N_CONST, s->line);
               ts_qcheck (g, r);
             }
           ts_qfree (g, v);
@@ -219,7 +284,8 @@ ts_vm_compile_to_qbe (TS_VM *vm, const char *source, bool dt_mode, TS_Error *err
   ts_cg_str (&unit, g.body.buf ? g.body.buf : "");
   ts_cg_str (&unit, "jmp @success\n@success\n%status0 =w copy 0\njmp @cleanup\n@fail\n%code =w loadw %err\n%bad =w ceqw %code, 0\n%status1 =w add %code, %bad\njmp @cleanup\n@cleanup\n%status =w phi @success %status0, @fail %status1\n");
   ts_cg_str (&unit, g.cleanup.buf ? g.cleanup.buf : "");
-  ts_cg_str (&unit, "ret %status\n}\n");
+  ts_cg_fmt (&unit, "%%final =w call $%s(l %%vm, w %%status, l %%err)\nret %%final\n}\n",
+             ts_qfn (&g, "ts_rt_finish", "dt_rt_finish"));
   free (g.body.buf); free (g.data.buf); free (g.slots.buf);
   free (g.cleanup.buf);
   if (unit.failed || g.body.failed || g.data.failed || g.slots.failed || g.cleanup.failed)
