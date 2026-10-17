@@ -1,0 +1,5 @@
+file(MAKE_DIRECTORY "${WORK}/view")
+file(WRITE "${WORK}/view/value" "value")
+set(ENV{TSC_FS_FIXTURE} "${WORK}/view")
+set(MARKER "filesystem views OK")
+include("${CMAKE_CURRENT_LIST_DIR}/termscript_backends.cmake")

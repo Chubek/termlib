@@ -209,6 +209,12 @@ activemq-data/
 .envrc
 .venv
 env/
+# Native std.env is source code, not a Python virtual environment.
+!/termscript/stdlib/env/
+!/termscript/stdlib/env/*.c
+!/termscript/stdlib/env/*.h
+!/termscript/stdlib/env/*.tsc
+!/termscript/stdlib/env/Termakfile
 venv/
 ENV/
 env.bak/
@@ -313,4 +319,3 @@ luac.out
 *.i*86
 *.x86_64
 *.hex
-

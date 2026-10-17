@@ -1,0 +1,19 @@
+G:import("compositor");
+G:import("emulator");
+const J = G:load("std.json");
+const output = compositor_m:new(800, 480, "Termscript terminal");
+const terminal = emulator_m:new(output, 30, 100);
+emulator_m:spawn(terminal, "exec /bin/sh");
+running = true;
+while running do
+  event = emulator_m:step(terminal, 50);
+  if event do
+    kind = J:get(event, "type");
+    if G:eq(kind, "close") do running = false; end
+    if G:eq(kind, "destroy") do running = false; end
+  end
+  state = emulator_m:status(terminal);
+  if G:eq(state, "eof") do running = false; end
+end
+emulator_m:close(terminal);
+compositor_m:close(output);

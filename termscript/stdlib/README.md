@@ -1,5 +1,9 @@
 # Termscript Standard Library
 
+Current restructuring status: see [implementation status](../IMPLEMENTATION.md),
+[additional modules](new-modules.md), and [MANIFEST.yaml](MANIFEST.yaml).
+The application examples target richer APIs than the existing modules expose.
+
 Hybrid libraries. Each one is two halves:
 
 - **Native module** (`<name>/<name>.c`, or C++20 for `shell`, module `std.<name>`) — owns
@@ -35,6 +39,7 @@ G:puts(second);
 | `color` | `std.color` | named ANSI colors, rgb, attributes, wrap |
 | `compositor` | `std.compositor` | committed ARGB surfaces, stacking, focus, headless/X11 composition ([API](compositor/README.md)) |
 | `csv` | `std.csv` | double-quote dialect parse/parse_line/field/join |
+| `crdt` | `std.crdt` | native Unicode RGA, concurrent edits, delta/state merge and versioned snapshots ([API](crdt/README.md)) |
 | `draw` | `std.draw` | hline/box/bar/progress/center string builders |
 | `drm` | `std.drm` | bundled libdrm device/capability/connector discovery ([API](emulator-backends.md)) |
 | `env` | `std.env` | getenv/setenv/unset, environ list, home, pid |
@@ -57,6 +62,7 @@ G:puts(second);
 | `pipe` | `std.pipe` | popen streams as handles |
 | `poll` | `std.poll` | bounded multi-fd readiness sets and deadline-aware waits ([API](emulator-backends.md)) |
 | `pty` | `std.pty` | standalone minipty: spawn/read/write/wait/close |
+| `procfs` | `std.procfs` | bounded read-only filesystem views, default `/proc` ([API](new-modules.md#read-only-procfssysfs-views)) |
 | `prompt` | `std.prompt` | reusable primary/continuation prompts and visible width |
 | `readline` | `std.readline` | line input (isocline when built in, getline fallback) + history |
 | `regex` | `std.regex` | POSIX ERE: search/full/find/count/replace with `\1`..`\9` and `&` |
@@ -69,6 +75,7 @@ G:puts(second);
 | `stream` | `std.stream` | append-only buffers with consuming getline |
 | `style` | `std.style` | SGR composition, escape stripping, visible width, padding |
 | `syntax` | `std.syntax` | naive keyword highlighting for c/termscript/sh |
+| `sysfs` | `std.sysfs` | bounded read-only filesystem views, default `/sys` ([API](new-modules.md#read-only-procfssysfs-views)) |
 | `table` | `std.table` | ruled separator-delimited text tables |
 | `terminfo` | `std.tinfo` | curated xterm strings + cup + live winsize (the full database is Termlib's `std.terminfo`) |
 | `test` | `std.test` | counting checks: new/check/eq/summary/done |

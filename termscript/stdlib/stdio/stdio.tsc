@@ -1,0 +1,1 @@
+const stdio_m = G:Import("std.stdio");

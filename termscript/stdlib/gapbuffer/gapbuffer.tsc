@@ -1,0 +1,1 @@
+const gapbuffer_m = G:Import("std.gapbuffer");

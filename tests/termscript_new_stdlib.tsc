@@ -1,0 +1,27 @@
+use gapbuffer, piecetable, memory, persian_script, set
+
+let gap = gapbuffer.new("abcd")
+gapbuffer.insert(gap, 2, "XY")
+gapbuffer.delete(gap, 1, 2)
+if gapbuffer.contents(gap) != "aYcd" { G:die("gap edit") }
+let pieces = piecetable.from("original")
+piecetable.insert(pieces, 8, "!")
+if piecetable.contents(pieces) != "original!" { G:die("piece edit") }
+
+let bytes = memory.alloc(4)
+memory.fill(bytes, 255)
+memory.set(bytes, 2, 65)
+if memory.get(bytes, 2) != 65 { G:die("memory set/get") }
+memory.close(bytes)
+memory.close(bytes)
+
+let names = set.new()
+if !set.add(names, "a") { G:die("set add") }
+if set.add(names, "a") { G:die("set duplicate") }
+set.add(names, "b")
+set.remove(names, "a")
+if set.has(names, "a") or set.len(names) != 1 { G:die("set remove") }
+
+if persian_script.normalize("ي ك") != "ی ک" { G:die("Persian normalization") }
+if persian_script.search_fold("می‌خواهمـ") != "میخواهم" { G:die("Persian fold") }
+print("new stdlib OK")

@@ -1,0 +1,333 @@
+# kmsterm.tms — a terminal emulator that draws straight to the display via
+# DRM/KMS. No X11, no Wayland, no fbdev: one card, one CRTC, two scan-out
+# buffers. For servers, kiosks and rescue systems where the kernel console
+# can't render Persian, emoji or anything past Latin-1.
+#
+#   kmsterm [-c CONFIG] [-- PROGRAM ARGS...]
+#
+#   • modesets the first connected output at its preferred mode
+#   • double-buffers with vblank-synced page flips and per-row damage
+#   • shapes text through a font fallback chain (Latin → Persian → emoji)
+#   • reorders RTL runs with the Unicode bidi algorithm inside a fixed grid
+#   • reads keyboards from evdev with hot-plug and a us/ir layout toggle
+#   • cooperates with VT switching (Ctrl+Alt+Fn) by dropping DRM master
+
+use drm, evdev, pty, vterm, exec, env, signal, poll, io, log, toml, set
+use font, font_discovery, font_shape, bidi, persian_script, utf8
+use terminal, draw, theme, key, cell
+
+struct Config {
+    font:       str   = "monospace"
+    size_px:    int   = 20
+    fallbacks:  [str] = ["Vazirmatn", "Noto Sans Arabic", "Noto Color Emoji"]
+    theme:      str   = "default-dark"
+    layouts:    str   = "us,ir"            # Alt+Shift toggles
+    scrollback: int   = 10_000
+    command:    [str] = []
+}
+
+# ── display: one CRTC, two dumb buffers, flip on vblank ─────────────────────
+
+struct Display {
+    card:     drm.Card
+    conn:     drm.Connector
+    crtc:     drm.Crtc
+    mode:     drm.Mode
+    fbs:      [drm.DumbBuffer]
+    back:     int                  # index of the buffer we draw into
+    flipping: bool
+}
+
+impl Display {
+    fn open() -> Display! {
+        let card = drm.open_first(fn(c) => c.connectors().any(fn(k) => k.connected()))?
+        let conn = card.connectors().find(fn(k) => k.connected()) or return error("no display connected")
+        let mode = conn.preferred_mode()
+        let crtc = card.free_crtc_for(conn)?
+        let fbs  = [0, 1].map(fn(_) => card.create_dumb(mode.w, mode.h, format: drm.XRGB8888)?)
+        crtc.modeset(fbs[0], conn, mode)?
+        log.info("{conn.name()} {mode.w}x{mode.h}@{mode.refresh}Hz on {card.path()}")
+        return Display { card, conn, crtc, mode, fbs, back: 1, flipping: false }
+    }
+
+    fn surface(self) -> draw.Surface => self.fbs[self.back].surface()    # mmap'd XRGB8888
+
+    fn flip(self) -> void! {
+        self.crtc.page_flip(self.fbs[self.back], notify: true)?
+        self.flipping = true
+    }
+
+    fn flip_done(self) { self.back = 1 - self.back; self.flipping = false }
+
+    fn release(self) -> void! { self.card.drop_master()? }
+
+    fn acquire(self) -> void! {
+        self.card.set_master()?
+        # Whoever had the VT may have reprogrammed the CRTC; restore our mode.
+        self.crtc.modeset(self.fbs[1 - self.back], self.conn, self.mode)?
+    }
+}
+
+# ── text: fallback chain, shaping, bidi, glyph cache ────────────────────────
+
+struct Glyphs {
+    chain:  font.FallbackChain
+    shaper: font_shape.Shaper
+    cache:  {(int, int, int): font.Bitmap}    # (face, glyph, cells) → coverage mask
+    cw:     int
+    ch:     int
+    ascent: int
+}
+
+impl Glyphs {
+    fn new(cfg: Config) -> Glyphs! {
+        var faces = [font.load(font_discovery.best(cfg.font, monospace: true)?, px: cfg.size_px)?]
+        for family in cfg.fallbacks {
+            let path = font_discovery.best(family) or { log.warn("font '{family}' not installed"); continue }
+            faces.push(font.load(path, px: cfg.size_px)?)
+        }
+        let m = faces[0].metrics()
+        return Glyphs {
+            chain: font.FallbackChain(faces), shaper: font_shape.new(), cache: {},
+            cw: m.advance, ch: m.line_height, ascent: m.ascent,
+        }
+    }
+
+    # Glyphs wider than their cells (Persian ligatures, emoji from a
+    # proportional fallback font) are squeezed so the grid never drifts.
+    fn mask(self, face: int, glyph: int, cells: int, advance: int) -> font.Bitmap {
+        let k = (face, glyph, cells)
+        if let b = self.cache[k] { return b }
+        let slot = cells * self.cw
+        let sx = if advance > slot { slot as float / advance } else { 1.0 }
+        let b = self.chain.face(face).rasterize(glyph, scale_x: sx)
+        self.cache[k] = b
+        return b
+    }
+
+    # vterm stores text in logical order. We resolve bidi per row (implicit
+    # levels, LTR paragraph — what mlterm does), then shape each visual run
+    # as a unit so Persian letters join and ZWNJ breaks joining where the
+    # writer put it. Cell boundaries still come from the logical grid.
+    fn draw_row(self, s: draw.Surface, row: [cell.Cell], y: int, pal: theme.Palette, cursor_x: int?) {
+        let text = row.map(fn(c) => c.text).join("")
+        let line = bidi.resolve(text, paragraph: bidi.LTR)
+        let vis  = line.visual_to_logical()
+
+        for (vx, lx) in vis.enumerate() {
+            let bg = if cursor_x == lx { pal.cursor } else { pal.bg(row[lx].style) }
+            s.fill_rect(vx * self.cw, y, self.cw, self.ch, bg)
+        }
+
+        for run in line.runs() {
+            # split each bidi run further wherever the style or the chosen font changes
+            for span in run.split_by(fn(i) => (row[i].style.fg, row[i].style.bold, self.chain.pick(text[i]))) {
+                let face = span.key.2
+                var t = text[span.logical]
+                let script = persian_script.detect(t)
+                if script.is_arabic_family() {
+                    t = persian_script.normalize(t, keep_zwnj: true)   # ي→ی, ك→ک; codepoint-for-codepoint
+                }
+                let shaped = self.shaper.shape(t, self.chain.face(face),
+                                               direction: run.direction, script: script.tag(), lang: "fa")
+                for cl in shaped.clusters() {
+                    let first = span.logical.start + cl.source.start
+                    let cells = utf8.width(t[cl.source])
+                    let vx    = vis.leftmost_of(first, width: cells)
+                    let st    = row[first].style
+                    let fg    = if cursor_x == first { pal.bg(st) } else { pal.fg(st) }
+                    let base  = vx * self.cw + max(0, cells * self.cw - cl.advance) / 2
+                    for g in cl.glyphs {                                 # base + combining marks
+                        let m = self.mask(face, g.id, cells, cl.advance)
+                        s.blend_mask(base + g.x_offset + m.left, y + self.ascent - g.y_offset - m.top, m, fg)
+                    }
+                    if st.underline { s.fill_rect(vx * self.cw, y + self.ascent + 2, cells * self.cw, 1, fg) }
+                }
+            }
+        }
+    }
+}
+
+# ── keyboards ───────────────────────────────────────────────────────────────
+
+struct Keyboards {
+    devs:   {str: evdev.Device}
+    keymap: key.Keymap
+}
+
+impl Keyboards {
+    fn open(layouts: str) -> Keyboards! {
+        var k = Keyboards { devs: {}, keymap: key.keymap(layouts.split(","), toggle: key.ALT_SHIFT)? }
+        for path in evdev.list() { k.add(path) }
+        return k
+    }
+
+    fn add(self, path: str) {
+        let d = evdev.open(path) catch e { log.debug("{path}: {e}"); return }
+        if !d.has_keys([evdev.KEY_A, evdev.KEY_ENTER]) { d.close(); return }   # mice, lid switches…
+        d.grab() catch e { log.warn("{d.name()}: cannot grab: {e}") }
+        log.info("keyboard: {d.name()}")
+        self.devs[path] = d
+    }
+}
+
+# ── the emulator ────────────────────────────────────────────────────────────
+
+struct App {
+    disp:     Display
+    gl:       Glyphs
+    kb:       Keyboards
+    term:     vterm.Term
+    pty:      pty.Master
+    pal:      theme.Palette
+    vt:       terminal.VirtualConsole
+    origin_x: int
+    origin_y: int
+    active:   bool
+    damage:   [set.Set<int>]       # rows stale in each of the two scan-out buffers
+    blink_on: bool
+    scroll:   int                  # lines scrolled back; 0 = live
+}
+
+impl App {
+    fn mark(self, rows: [int]) { for d in self.damage { d.extend(rows) } }
+    fn mark_all(self) { self.mark((0..self.term.rows()).to_list()) }
+
+    # Each buffer remembers its own stale rows: after a flip, the new back
+    # buffer is one frame behind, so it must catch up on both frames' damage.
+    fn render(self) -> void! {
+        if !self.active or self.disp.flipping { return }
+        self.mark(self.term.take_damage())
+        let dirty = self.damage[self.disp.back]
+        if dirty.is_empty() { return }
+
+        let s   = self.disp.surface()
+        let cur = self.term.cursor()
+        for y in dirty.sorted() {
+            let row = self.term.row(y - self.scroll)           # negative index = scrollback
+            let cx  = if cur.visible and self.blink_on and self.scroll == 0 and cur.y == y { cur.x } else { nil }
+            self.gl.draw_row(s.sub(self.origin_x, 0), row, self.origin_y + y * self.gl.ch, self.pal, cx)
+        }
+        dirty.clear()
+        self.disp.flip()?
+    }
+
+    fn on_input(self, ev: evdev.Event) -> void! {
+        let k = self.kb.keymap.feed(ev) or return        # modifiers, autorepeat, compose, layout toggle
+        match k {
+            key.CtrlAlt(key.F(n))   => self.vt.activate(n)?     # kernel keyboard is off: we switch VTs ourselves
+            key.Shift(key.PageUp)   => self.scroll_by(self.term.rows() / 2)
+            key.Shift(key.PageDown) => self.scroll_by(-self.term.rows() / 2)
+            _ => {
+                if self.scroll != 0 { self.scroll_by(-self.scroll) }
+                self.pty.write(self.term.encode_key(k))?          # honours DECCKM, kitty keyboard protocol
+            }
+        }
+    }
+
+    fn scroll_by(self, n: int) {
+        self.scroll = clamp(self.scroll + n, 0, self.term.scrollback_len())
+        self.mark_all()
+        self.render() or {}
+    }
+
+    fn release_vt(self) -> void! {
+        self.active = false
+        for (_, d) in self.kb.devs { d.ungrab() or {} }
+        self.disp.release()?
+        self.vt.ack_release()?
+    }
+
+    fn acquire_vt(self) -> void! {
+        self.vt.ack_acquire()?
+        self.disp.acquire()?
+        for (_, d) in self.kb.devs { d.grab() or {} }
+        self.kb.keymap.reset_modifiers()       # we never saw the key-ups for Ctrl+Alt
+        self.active = true
+        self.mark_all()
+        self.render()?
+    }
+}
+
+fn main(args: [str]) -> int! {
+    let cfg_path = match args { ["-c", p, ..] => p, _ => io.join(env.config_dir(), "kmsterm.toml") }
+    let cmd = args.after("--") or []
+    let cfg = if io.exists(cfg_path) { toml.decode<Config>(io.read_text(cfg_path)?)? } else { Config {} }
+    log.to_journal("kmsterm")
+
+    let vt = terminal.vt_open_current()?
+    vt.set_graphics(true)?                     # stop the kernel console drawing over us
+    vt.set_keyboard_mode(terminal.K_OFF)?      # keys come from evdev, not the tty
+    vt.process_switching(release: signal.USR1, acquire: signal.USR2)?
+    defer { vt.auto_switching(); vt.set_keyboard_mode(terminal.K_UNICODE); vt.set_graphics(false) }
+
+    let disp = Display.open()?
+    let gl   = Glyphs.new(cfg)?
+    let cols = disp.mode.w / gl.cw
+    let rows = disp.mode.h / gl.ch
+
+    let (master, slave) = pty.open(cols, rows)?
+    let argv = if !cmd.is_empty() { cmd }
+               else if !cfg.command.is_empty() { cfg.command }
+               else { [env.get("SHELL") or "/bin/sh", "-l"] }
+    let child = exec.spawn(argv[0], argv[1..], {
+        stdin: slave, stdout: slave, stderr: slave, setsid: true, controlling_tty: slave,
+        env: env.all().with("TERM", "xterm-256color").with("COLORTERM", "truecolor"),
+    })?
+    slave.close()
+
+    var app = App {
+        disp, gl, vt, pty: master,
+        kb: Keyboards.open(cfg.layouts)?,
+        term: vterm.new(cols, rows, scrollback: cfg.scrollback),
+        pal: theme.load(cfg.theme)?.palette(),
+        origin_x: (disp.mode.w - cols * gl.cw) / 2,           # centre the grid; margins stay background
+        origin_y: (disp.mode.h - rows * gl.ch) / 2,
+        active: true, damage: [set.new(), set.new()], blink_on: true, scroll: 0,
+    }
+    for buf in [0, 1] { app.disp.fbs[buf].surface().clear(app.pal.background) }
+    app.mark_all()
+    app.render()?
+
+    let lp = poll.Loop.new()
+
+    lp.on_readable(master, fn() {
+        app.term.feed(master.read_available()?)
+        if let r = app.term.take_replies() { master.write(r)? }
+        app.render()?
+    }, on_hangup: fn() => lp.stop())
+
+    lp.on_readable(disp.card, fn() {
+        for ev in disp.card.read_events()? {
+            if ev is drm.FlipComplete { app.disp.flip_done(); app.render()? }
+        }
+    })
+
+    fn watch(d: evdev.Device) {
+        lp.on_readable(d, fn() { for ev in d.read_events()? { app.on_input(ev)? } })
+    }
+    for (_, d) in app.kb.devs { watch(d) }
+
+    let hotplug = evdev.hotplug()?
+    lp.on_readable(hotplug, fn() {
+        for change in hotplug.read()? {
+            match change {
+                evdev.Added(path)   => { app.kb.add(path); if let d = app.kb.devs[path] { watch(d) } }
+                evdev.Removed(path) => if let d = app.kb.devs.remove(path) { lp.unwatch(d); d.close() }
+            }
+        }
+    })
+
+    lp.on_signal(signal.USR1, fn() => app.release_vt()?)
+    lp.on_signal(signal.USR2, fn() => app.acquire_vt()?)
+    lp.on_signal(signal.CHLD, fn() { if exec.reap().any(fn(st) => st.pid == child.pid) { lp.stop() } })
+    lp.on_signal([signal.TERM, signal.HUP], fn() => lp.stop())
+    lp.every(530, fn() {
+        app.blink_on = !app.blink_on
+        app.mark([app.term.cursor().y])
+        app.render()?
+    })
+
+    lp.run()?
+    return child.exit_code() or 0
+}

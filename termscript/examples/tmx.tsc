@@ -1,0 +1,346 @@
+# tmx.tms — a terminal multiplexer with detachable sessions
+#
+#   tmx              attach to (or create) session "main"
+#   tmx -s work      attach to (or create) session "work"
+#   tmx ls           list sessions
+#   tmx kill work    end a session and every process in it
+#
+# Each session is one background server that owns its ptys. Clients are thin:
+# they put the local terminal in raw mode, forward input bytes over a Unix
+# socket and paint the cell diffs the server sends back. Closing a client
+# never kills a shell; `C-b d` detaches and `tmx -s work` picks up later.
+#
+# Keys after the C-b prefix:
+#   %  split left/right      "  split top/bottom     x  close pane
+#   ←↑→↓  move focus         M-←↑→↓  resize split    z  zoom pane
+#   d  detach                C-b  send a literal C-b
+
+use pty, vterm, exec, env, signal, poll, socket, ipc, io, glob, log, buffer, utf8
+use terminal, termios, screen, compositor, layout, key, style, color
+
+const PREFIX_BYTE = 0x02          # C-b
+const FRAME_MS    = 16            # coalesce pane output into ≤ 60 frames/s
+
+let SOCK_DIR = io.join(env.get("XDG_RUNTIME_DIR") or "/tmp", "tmx-{env.uid()}")
+
+fn sock_path(name: str) -> str => io.join(SOCK_DIR, "{name}.sock")
+
+# ── wire protocol; ipc.Channel serialises enum values for us ────────────────
+
+enum Msg {
+    Hello(cols: int, rows: int)
+    Input(data: buffer.Bytes)
+    Resize(cols: int, rows: int)
+    Kill
+    Frame(diff: screen.Diff)
+    Detached
+    Bye(reason: str)
+}
+
+# ── panes ───────────────────────────────────────────────────────────────────
+
+struct Pane {
+    id:    int
+    pty:   pty.Master
+    child: exec.Process
+    term:  vterm.Term
+}
+
+impl Pane {
+    fn spawn(id: int, r: layout.Rect) -> Pane! {
+        let (master, slave) = pty.open(r.w, r.h)?
+        let child = exec.spawn(env.get("SHELL") or "/bin/sh", ["-l"], {
+            stdin: slave, stdout: slave, stderr: slave,
+            setsid: true, controlling_tty: slave,
+            env: env.all().with("TERM", "xterm-256color").with("TMX", "1"),
+        })?
+        slave.close()                      # only the child keeps the slave side open
+        return Pane { id, pty: master, child, term: vterm.new(r.w, r.h, scrollback: 5000) }
+    }
+
+    fn resize(self, r: layout.Rect) {
+        if (r.w, r.h) == self.term.size() { return }
+        self.term.resize(r.w, r.h)         # reflows soft-wrapped lines
+        self.pty.set_winsize(r.w, r.h)     # kernel delivers SIGWINCH to the child
+    }
+}
+
+# ── a session: panes arranged in a split tree, shared by N clients ──────────
+
+struct Session {
+    name:    str
+    lp:      poll.Loop
+    panes:   {int: Pane}
+    tree:    layout.Tree<int>          # binary split tree; leaves are pane ids
+    focus:   int
+    next_id: int
+    cols:    int
+    rows:    int
+    comp:    compositor.Compositor     # off-screen cell grid that diffs frames
+    clients: [ipc.Channel<Msg>]
+    prefix:  bool                      # true right after C-b
+}
+
+impl Session {
+    fn new(name: str, lp: poll.Loop, cols: int, rows: int) -> Session! {
+        var s = Session {
+            name, lp, cols, rows,
+            panes: {}, tree: layout.Tree.empty(), focus: -1, next_id: 1,
+            comp: compositor.new(cols, rows), clients: [], prefix: false,
+        }
+        s.open_pane(layout.Split.Vertical)?
+        return s
+    }
+
+    fn body(self) -> layout.Rect => layout.Rect(0, 0, self.cols, self.rows - 1)   # last row: status
+    fn rects(self) -> {int: layout.Rect} => self.tree.solve(self.body(), gap: 1)
+    fn focused(self) -> Pane => self.panes[self.focus]
+
+    fn open_pane(self, dir: layout.Split) -> void! {
+        let id = self.next_id
+        self.next_id += 1
+        if self.tree.is_empty() { self.tree = layout.Tree.leaf(id) }
+        else { self.tree.split(self.focus, id, dir, ratio: 0.5) }
+
+        let p = Pane.spawn(id, self.rects()[id])?
+        self.panes[id] = p
+        self.focus = id
+
+        # pty output only updates terminal state; painting happens on the frame timer
+        self.lp.on_readable(p.pty, fn() {
+            p.term.feed(p.pty.read_available()?)
+            if let reply = p.term.take_replies() { p.pty.write(reply)? }   # DSR, DA, OSC queries
+        }, on_hangup: fn() => self.close_pane(id))
+        self.relayout()
+    }
+
+    fn close_pane(self, id: int) {
+        let p = self.panes.remove(id) or return
+        self.lp.unwatch(p.pty)
+        p.child.signal(signal.HUP)
+        p.pty.close()
+        self.tree.remove(id)
+        if self.tree.is_empty() { return self.shutdown("last pane closed") }
+        if self.focus == id { self.focus = self.tree.leaves()[0] }
+        self.relayout()
+    }
+
+    fn relayout(self) {
+        for (id, r) in self.rects() { self.panes[id].resize(r) }
+        self.comp.invalidate()
+    }
+
+    # The most recent client's size wins (tmux's `window-size latest`).
+    fn resize(self, cols: int, rows: int) {
+        self.cols, self.rows = cols, rows
+        self.comp.resize(cols, rows)
+        self.relayout()
+    }
+
+    # Everything up to a prefix byte goes to the focused pane untouched, so
+    # pastes, mouse reports and multi-byte UTF-8 survive byte-for-byte.
+    fn handle_input(self, data: buffer.Bytes, from: ipc.Channel<Msg>) -> void! {
+        var rest = data
+        while !rest.is_empty() {
+            if self.prefix {
+                let (k, used) = key.decode_one(rest)
+                rest = rest[used..]
+                self.prefix = false
+                self.command(k, from)?
+                continue
+            }
+            let cut = rest.index_of(PREFIX_BYTE) or rest.len()
+            if cut > 0 { self.focused().pty.write(rest[..cut])? }
+            self.prefix = cut < rest.len()
+            rest = rest[min(cut + 1, rest.len())..]
+        }
+    }
+
+    fn command(self, k: key.Key, from: ipc.Channel<Msg>) -> void! {
+        match k {
+            key.Char('%')            => self.open_pane(layout.Split.Vertical)?
+            key.Char('"')            => self.open_pane(layout.Split.Horizontal)?
+            key.Char('x')            => self.close_pane(self.focus)
+            key.Char('z')            => { self.tree.toggle_zoom(self.focus); self.relayout() }
+            key.Char('d')            => { from.send(Msg.Detached)?; self.drop_client(from) }
+            key.Arrow(dir)           => self.focus = self.tree.neighbour(self.focus, dir) or self.focus
+            key.Alt(key.Arrow(dir))  => { self.tree.nudge(self.focus, dir, 0.05); self.relayout() }
+            key.Ctrl('b')            => self.focused().pty.write([PREFIX_BYTE])?
+            _                        => {}          # unknown command: ignore, like tmux
+        }
+    }
+
+    fn render(self) -> screen.Diff? {
+        let full = self.comp.take_invalidated()
+        let rects = self.rects()
+        for (id, r) in rects {
+            let t = self.panes[id].term
+            let damaged = t.take_damage()                  # rows written since last frame
+            for y in (if full { 0..r.h } else { damaged }) {
+                self.comp.blit(r.x, r.y + y, t.row(y))
+            }
+        }
+        # Borders and the status line are cheap: redraw them every frame and
+        # let the compositor's diff decide whether anything actually changed.
+        let dim = style.fg(color.ansi(8))
+        let hot = style.fg(color.ansi(2)).bold()
+        for (id, r) in rects {
+            self.comp.frame(r.grow(1).clip(self.body()), if id == self.focus { hot } else { dim }, join: true)
+        }
+        self.draw_status()
+
+        let c  = self.focused().term.cursor()
+        let fr = rects[self.focus]
+        self.comp.cursor(fr.x + c.x, fr.y + c.y, visible: c.visible, shape: c.shape)
+        return self.comp.commit()                          # nil when the frame is identical
+    }
+
+    fn draw_status(self) {
+        let bar  = style.bg(color.ansi(2)).fg(color.ansi(0))
+        let y    = self.rows - 1
+        let tabs = self.tree.leaves().map(fn(i) => if i == self.focus { "[{i}]" } else { " {i} " }).join("")
+        let mark = if self.prefix { "C-b " } else { "" }
+        let left  = " {self.name} │{tabs}"
+        let right = "{mark}{self.focused().term.title()} │ {exec.hostname()} "
+        self.comp.fill(0, y, self.cols, 1, ' ', bar)
+        self.comp.text(0, y, utf8.truncate(left, self.cols / 2), bar)
+        self.comp.text(self.cols - utf8.width(right), y, right, bar)
+    }
+
+    fn broadcast(self) {
+        let diff = self.render() or return
+        for c in self.clients.clone() {
+            c.send(Msg.Frame(diff)) catch _ { self.drop_client(c) }
+        }
+    }
+
+    fn drop_client(self, c: ipc.Channel<Msg>) {
+        self.clients.remove_value(c)
+        self.lp.unwatch(c)
+        c.close()
+    }
+
+    fn shutdown(self, why: str) {
+        for c in self.clients { c.send(Msg.Bye(why)) or {} }
+        for (_, p) in self.panes { p.child.signal(signal.HUP) }
+        self.lp.stop()
+    }
+}
+
+# ── server: one per session, daemonised ─────────────────────────────────────
+
+fn serve(name: str) -> int! {
+    let path = sock_path(name)
+    let listener = socket.listen_unix(path, mode: 0o600)?
+    defer io.remove(path)
+    signal.ignore(signal.PIPE)
+    log.to_file(io.join(SOCK_DIR, "{name}.log"))
+
+    let lp = poll.Loop.new()
+    var s: Session? = nil
+
+    lp.on_readable(listener, fn() {
+        let ch = ipc.channel<Msg>(listener.accept()?)
+        lp.on_message(ch, fn(m: Msg) {
+            match m {
+                Msg.Hello(cols, rows) => {
+                    if s == nil { s = Session.new(name, lp, cols, rows)? } else { s.resize(cols, rows) }
+                    s.clients.push(ch)
+                    s.comp.force_full()               # the newcomer starts with a blank screen
+                }
+                Msg.Input(data)   => s?.handle_input(data, ch)?
+                Msg.Resize(c, r)  => s?.resize(c, r)
+                Msg.Kill          => if s == nil { lp.stop() } else { s.shutdown("killed") }
+                _                 => log.warn("unexpected {m} from client")
+            }
+        }, on_close: fn() => s?.drop_client(ch))
+    })
+
+    lp.on_signal(signal.CHLD, fn() {
+        # Panes are closed by their pty hang-up handler; here we only reap zombies.
+        for st in exec.reap() { log.info("pid {st.pid} exited: {st}") }
+    })
+    lp.on_signal(signal.TERM, fn() => s?.shutdown("server terminated"))
+    lp.every(FRAME_MS, fn() => s?.broadcast())
+    lp.run()?
+    return 0
+}
+
+# ── client ──────────────────────────────────────────────────────────────────
+
+fn client_loop(tty: terminal.Tty, name: str) -> str! {
+    let ch = ipc.channel<Msg>(socket.connect_unix(sock_path(name))?)
+    let (cols, rows) = tty.size()
+    let scr = screen.new(tty, cols, rows)          # tracks what's on the real terminal
+    ch.send(Msg.Hello(cols, rows))?
+
+    var farewell = ""
+    let lp = poll.Loop.new()
+    lp.on_readable(tty, fn() => ch.send(Msg.Input(tty.read_available()?))?)
+    lp.on_signal(signal.WINCH, fn() {
+        let (c, r) = tty.size()
+        scr.resize(c, r)
+        ch.send(Msg.Resize(c, r))?
+    })
+    lp.on_message(ch, fn(m: Msg) {
+        match m {
+            Msg.Frame(d)  => scr.apply(d)          # minimal cursor moves + SGR
+            Msg.Detached  => { farewell = "[detached from {name}]"; lp.stop() }
+            Msg.Bye(why)  => { farewell = "[{name}: {why}]"; lp.stop() }
+            _             => {}
+        }
+    }, on_close: fn() { farewell = "[lost connection to {name}]"; lp.stop() })
+    lp.run()?
+    return farewell
+}
+
+fn attach(name: str) -> int! {
+    let tty = terminal.open_controlling()?
+    var farewell = ""
+    do {
+        let saved = termios.get(tty)?
+        termios.set(tty, termios.raw(saved))?
+        defer termios.set(tty, saved)
+        tty.write(terminal.ALT_SCREEN_ON + terminal.BRACKETED_PASTE_ON + terminal.MOUSE_SGR_ON)
+        defer tty.write(terminal.MOUSE_SGR_OFF + terminal.BRACKETED_PASTE_OFF + terminal.ALT_SCREEN_OFF)
+        farewell = client_loop(tty, name)?
+    }                                              # defers run here: terminal restored
+    print(farewell)
+    return 0
+}
+
+fn list_sessions() -> int! {
+    for path in glob.match(io.join(SOCK_DIR, "*.sock")).sorted() {
+        let name = io.stem(path)
+        match socket.connect_unix(path) {
+            ok(c)  => { c.close(); print(name) }
+            err(_) => print("{name}  (stale)")
+        }
+    }
+    return 0
+}
+
+fn kill_session(name: str) -> int! {
+    ipc.channel<Msg>(socket.connect_unix(sock_path(name))?).send(Msg.Kill)?
+    return 0
+}
+
+fn main(args: [str]) -> int! {
+    let name = match args {
+        ["ls"]       => return list_sessions()
+        ["kill", n]  => return kill_session(n)
+        ["-s", n]    => n
+        []           => "main"
+        _            => { io.eprint("usage: tmx [-s NAME] | ls | kill NAME"); return 2 }
+    }
+    if env.get("TMX") != nil { io.eprint("tmx: refusing to nest; unset TMX to force"); return 1 }
+
+    io.mkdir_all(SOCK_DIR, mode: 0o700)?
+    let path = sock_path(name)
+    if socket.connect_unix(path).is_err() {
+        io.remove(path) or {}                      # stale socket left by a crash
+        exec.daemonize(fn() => serve(name))?       # double fork, setsid, close fds
+        socket.wait_until_listening(path, timeout_ms: 2000)?
+    }
+    return attach(name)
+}

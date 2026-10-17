@@ -1,0 +1,1 @@
+const drm_m = G:load("std.drm") or G:die("std.drm unavailable");

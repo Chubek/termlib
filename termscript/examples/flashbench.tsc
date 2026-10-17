@@ -1,0 +1,351 @@
+# flashbench.tms — production-line flashing and functional-test station
+#
+# Drives N device fixtures in parallel. For each board it:
+#   1. power-cycles it through a networked PDU
+#   2. catches the bootloader by spamming ESC into the serial console
+#   3. uploads firmware over XMODEM-1K/CRC-16 and verifies the image CRC-32
+#   4. boots the application, reads the serial number, runs scripted tests
+#   5. keeps a full serial transcript, appends a CSV row, posts JSON to MES
+# while a live table shows every fixture. Swap a board, press its number.
+#
+#   flashbench plan.yaml
+#
+# Example plan.yaml:
+#   station:  line3-bench2
+#   firmware: build/sensor-node-2.4.1.bin
+#   mes_url:  https://mes.factory.local/api/v1/results
+#   pdu:      { url: "http://10.0.3.50", token_env: PDU_TOKEN }
+#   serial:   { baud: 921600, parity: none, stop_bits: 1, flow: none }
+#   fixtures:
+#     - { port: /dev/serial/by-path/pci-0000:00:14.0-usb-0:1.1:1.0, outlet: 1 }
+#     - { port: /dev/serial/by-path/pci-0000:00:14.0-usb-0:1.2:1.0, outlet: 2 }
+#   tests:
+#     - { name: rtc,     send: "selftest rtc", expect: 'RTC (?<status>OK|FAIL)', accept: { status: [OK] } }
+#     - { name: spi_id,  send: "selftest spi", expect: 'JEDEC (?<id>[0-9A-F]{6})', accept: { id: [EF4018, C84018] } }
+#     - { name: vref,    send: "adc read 0",   expect: 'mV=(?<mv>\d+)', range: { mv: [3250, 3350] } }
+#     - { name: radio,   send: "rf ping",      expect: 'RSSI=(?<rssi>-?\d+)', range: { rssi: [-70, 0] }, timeout: 8, retries: 2 }
+
+use yaml, json, csv, http, io, env, log, sched, termios, baudrate, expect, fsm
+use tui, table, style, color, key, buffer
+
+# ── plan ────────────────────────────────────────────────────────────────────
+
+struct SerialCfg { baud: int, parity: str = "none", stop_bits: int = 1, flow: str = "none" }
+struct Fixture   { port: str, outlet: int }
+struct Pdu       { url: str, token_env: str }
+struct TestStep {
+    name:    str
+    send:    str
+    expect:  str
+    timeout: float = 3.0
+    retries: int = 0
+    accept:  {str: [str]} = {}
+    range:   {str: [float]} = {}
+}
+struct Plan {
+    station: str, firmware: str, mes_url: str, pdu: Pdu, serial: SerialCfg,
+    fixtures: [Fixture], tests: [TestStep],
+}
+
+# ── checksums ───────────────────────────────────────────────────────────────
+
+# CRC-16/XMODEM: poly 0x1021, init 0, no reflection.
+let CRC16_TABLE = (0..256).map(fn(i) {
+    var c = i << 8
+    for _ in 0..8 { c = if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 } }
+    c & 0xFFFF
+})
+
+fn crc16(data: buffer.Bytes) -> int {
+    var crc = 0
+    for b in data { crc = ((crc << 8) & 0xFFFF) ^ CRC16_TABLE[((crc >> 8) ^ b) & 0xFF] }
+    return crc
+}
+
+# CRC-32/ISO-HDLC: what the bootloader's `crc` command reports.
+let CRC32_TABLE = (0..256).map(fn(i) {
+    var c = i
+    for _ in 0..8 { c = if c & 1 != 0 { 0xEDB88320 ^ (c >> 1) } else { c >> 1 } }
+    c
+})
+
+fn crc32(data: buffer.Bytes) -> int {
+    var crc = 0xFFFFFFFF
+    for b in data { crc = CRC32_TABLE[(crc ^ b) & 0xFF] ^ (crc >> 8) }
+    return crc ^ 0xFFFFFFFF
+}
+
+# ── serial ──────────────────────────────────────────────────────────────────
+
+fn open_serial(path: str, cfg: SerialCfg) -> io.File! {
+    let f = io.open(path, io.READ | io.WRITE | io.NO_CTTY | io.EXCLUSIVE)?   # TIOCEXCL: nobody else may open it
+    var t = termios.raw(termios.get(f)?)
+    t.set_speed(baudrate.encode(cfg.baud)?)        # Bxxx constant, or BOTHER + c_ospeed for odd rates
+    t.char_size     = 8
+    t.parity        = match cfg.parity { "even" => termios.EVEN, "odd" => termios.ODD, _ => termios.NONE }
+    t.two_stop_bits = cfg.stop_bits == 2
+    t.rtscts        = cfg.flow == "rtscts"
+    t.clocal        = true                         # fixtures don't wire DCD
+    t.vmin, t.vtime = 0, 1                         # reads return after 100 ms of silence
+    termios.set(f, t, when: termios.FLUSH)?
+    return f
+}
+
+# ── XMODEM-1K with CRC-16 ───────────────────────────────────────────────────
+
+const STX, EOT, ACK, NAK, CAN = 0x02, 0x04, 0x06, 0x15, 0x18
+const CRC_REQUEST = 0x43                           # 'C'
+
+fn xmodem_send(port: io.File, image: buffer.Bytes, progress: fn(float)) -> void! {
+    port.read_until_byte(CRC_REQUEST, timeout: 10.0) or return error("receiver never requested CRC mode")
+    let blocks = image.chunks(1024)
+    for (i, chunk) in blocks.enumerate() {
+        let seq   = (i + 1) & 0xFF
+        let body  = chunk.pad_to(1024, 0x1A)       # SUB pads the final block
+        let c     = crc16(body)
+        let frame = buffer.Bytes([STX, seq, 0xFF - seq]) + body + buffer.Bytes([c >> 8, c & 0xFF])
+        var tries = 0
+        loop {
+            port.write(frame)?
+            match port.read_byte(timeout: 5.0) {
+                ACK       => break
+                CAN       => if port.read_byte(timeout: 1.0) == CAN { return error("receiver cancelled at block {i}") }
+                NAK | nil => {}
+                other     => log.debug("xmodem: stray {other:#04x} after block {i}")
+            }
+            tries += 1
+            if tries == 10 {
+                port.write([CAN, CAN, CAN])?
+                return error("block {i}: no ACK after 10 attempts")
+            }
+        }
+        progress((i + 1) as float / blocks.len())
+    }
+    for _ in 0..10 {
+        port.write([EOT])?
+        if port.read_byte(timeout: 3.0) == ACK { return }
+    }
+    return error("EOT not acknowledged")
+}
+
+# ── one board through the line ──────────────────────────────────────────────
+
+enum Stage { Idle, PowerCycle, CatchBoot, Upload, Verify, Boot, Identify, Test(index: int), Pass, Fail(reason: str) }
+
+struct Board {
+    fx:        Fixture
+    stage:     Stage
+    progress:  float
+    serial_no: str
+    started:   float
+    results:   {str: json.Value}
+}
+
+impl Board {
+    fn idle(fx: Fixture) -> Board => Board { fx, stage: Stage.Idle, progress: 0.0, serial_no: "", started: 0.0, results: {} }
+    fn fresh(fx: Fixture) -> Board => Board { fx, stage: Stage.PowerCycle, progress: 0.0, serial_no: "", started: sched.now(), results: {} }
+    fn busy(self) -> bool => !(self.stage is Stage.Idle or self.stage is Stage.Pass or self.stage is Stage.Fail)
+}
+
+# Checks captured groups against the plan's accept-lists and numeric ranges.
+fn judge(t: TestStep, groups: {str: str}) -> {str: json.Value}! {
+    var out = {}
+    for (k, v) in groups {
+        if let allowed = t.accept[k] {
+            if !allowed.contains(v) { return error("{k}={v}, expected one of {allowed}") }
+        }
+        if let [lo, hi] = t.range[k] {
+            let x = v.to_float() or return error("{k}={v} is not a number")
+            if x < lo or x > hi { return error("{k}={x} outside [{lo}, {hi}]") }
+            out[k] = json.num(x)
+        } else {
+            out[k] = json.str(v)
+        }
+    }
+    return out
+}
+
+fn run_board(plan: Plan, b: Board, image: buffer.Bytes, image_crc: int, pdu: http.Client) -> void! {
+    let port = open_serial(b.fx.port, plan.serial)?
+    defer port.close()
+    let log_path = io.join("logs", "{plan.station}-f{b.fx.outlet}-{sched.timestamp()}.log")
+    let ex = expect.attach(port, transcript: io.create(log_path)?, timestamps: true)
+
+    let m = fsm.Machine<Stage>(Stage.PowerCycle,
+        on_enter: fn(s) { b.stage = s; log.info("fixture {b.fx.outlet}: {s}") },
+        on_error: fn(e) => Stage.Fail("{b.stage}: {e}"))     # any `?` failure ends the run cleanly
+
+    m.state(Stage.PowerCycle, fn() {
+        pdu.post("/outlets/{b.fx.outlet}/off")?.ensure_ok()?
+        sched.sleep(1.5)                                  # let bulk caps drain so the MCU truly resets
+        port.flush_input()
+        pdu.post("/outlets/{b.fx.outlet}/on")?.ensure_ok()?
+        return Stage.CatchBoot
+    })
+
+    m.state(Stage.CatchBoot, fn() {
+        # The bootloader listens for a keypress for only 50 ms before jumping to the app.
+        let deadline = sched.now() + 3.0
+        while sched.now() < deadline {
+            port.write("\x1b")?
+            if ex.expect(r"BOOT> ", timeout: 0.02).matched { return Stage.Upload }
+        }
+        return Stage.Fail("no bootloader prompt within 3 s")
+    })
+
+    m.state(Stage.Upload, fn() {
+        ex.send("xrecv 0x08008000\r")?
+        ex.expect(r"Ready for XMODEM", timeout: 2.0).or_fail()?
+        xmodem_send(port, image, fn(p) => b.progress = p)?
+        ex.expect(r"BOOT> ", timeout: 5.0).or_fail()?
+        return Stage.Verify
+    })
+
+    m.state(Stage.Verify, fn() {
+        ex.send("crc 0x08008000 {image.len()}\r")?
+        let got = ex.expect(r"CRC32=0x(?<crc>[0-9a-fA-F]{8})", timeout: 5.0).or_fail()?["crc"]
+        if got.parse_hex() != image_crc { return Stage.Fail("flash CRC {got} ≠ image {image_crc:08x}") }
+        return Stage.Boot
+    })
+
+    m.state(Stage.Boot, fn() {
+        ex.send("go\r")?
+        ex.expect(r"app ready", timeout: 10.0).or_fail()?
+        return Stage.Identify
+    })
+
+    m.state(Stage.Identify, fn() {
+        ex.send("id\r")?
+        b.serial_no = ex.expect(r"SN=(?<sn>[A-Z0-9]{12})", timeout: 2.0).or_fail()?["sn"]
+        return Stage.Test(0)
+    })
+
+    m.state_matching(Stage.Test, fn(Stage.Test(i)) {
+        if i == plan.tests.len() { return Stage.Pass }
+        let t = plan.tests[i]
+        b.progress = i as float / plan.tests.len()
+        var last_reason = "no response matching /{t.expect}/"
+        for _ in 0..=t.retries {
+            ex.send("{t.send}\r")?
+            let r = ex.expect(t.expect, timeout: t.timeout)
+            if !r.matched { continue }
+            match judge(t, r.groups) {
+                ok(values) => { b.results[t.name] = json.object(values); return Stage.Test(i + 1) }
+                err(why)   => last_reason = why
+            }
+        }
+        return Stage.Fail("{t.name}: {last_reason}")
+    })
+
+    m.run_until(fn(s) => s is Stage.Pass or s is Stage.Fail)
+}
+
+# ── reporting ───────────────────────────────────────────────────────────────
+
+fn report(plan: Plan, b: Board, image_crc: int, mes: http.Client, sheet: csv.Writer) -> void! {
+    let passed = b.stage is Stage.Pass
+    let reason = if let Stage.Fail(r) = b.stage { r } else { "" }
+    let rec = json.object({
+        "station": plan.station, "fixture": b.fx.outlet, "serial": b.serial_no,
+        "firmware": io.basename(plan.firmware), "firmware_crc32": "{image_crc:08x}",
+        "result": if passed { "PASS" } else { "FAIL" }, "reason": reason,
+        "duration_s": sched.now() - b.started, "measurements": b.results,
+    })
+
+    sheet.write_row([sched.iso_now(), plan.station, "{b.fx.outlet}", b.serial_no,
+                     rec["result"].as_str(), reason, "{rec["duration_s"].as_float():.1f}"]
+                    + plan.tests.map(fn(t) => b.results.get(t.name)?.to_compact() or ""))
+    sheet.flush()?
+
+    # MES sits behind plant Wi-Fi: retry with back-off, and never lose a record.
+    for delay in [0.5, 1.0, 2.0, 4.0, 8.0] {
+        let r = mes.post_json("", rec) catch e { log.warn("MES: {e}"); sched.sleep(delay); continue }
+        if r.status < 300 { return }
+        if r.status < 500 { return error("MES rejected {b.serial_no}: {r.status} {r.text()}") }
+        sched.sleep(delay)
+    }
+    io.append_text("mes-backlog.jsonl", json.encode(rec) + "\n")?
+    log.error("MES unreachable; queued fixture {b.fx.outlet} in mes-backlog.jsonl")
+}
+
+# ── dashboard ───────────────────────────────────────────────────────────────
+
+fn row_style(b: Board) -> style.Style => match b.stage {
+    Stage.Pass    => style.fg(color.ansi(2)).bold()
+    Stage.Fail(_) => style.fg(color.ansi(1)).bold()
+    Stage.Idle    => style.fg(color.ansi(8))
+    _             => style.plain()
+}
+
+fn dashboard(plan: Plan, boards: [Board]) -> tui.App {
+    let t = table.new(["#", "Port", "Serial", "Stage", "Progress", "Elapsed", "Result"])
+    t.column("Progress").render = fn(p) => table.bar(p, width: 24)
+    t.column("Result").width = 40
+    return tui.App.new(fn(frame) {
+        t.clear()
+        for b in boards {
+            let elapsed = if b.started > 0.0 { "{sched.now() - b.started:.0f}s" } else { "" }
+            let result  = match b.stage { Stage.Pass => "PASS", Stage.Fail(r) => "FAIL  {r}", _ => "" }
+            t.add_row(["{b.fx.outlet}", io.basename(b.fx.port), b.serial_no, "{b.stage}",
+                       b.progress, elapsed, result], style: row_style(b))
+        }
+        let passed = boards.count(fn(b) => b.stage is Stage.Pass)
+        let failed = boards.count(fn(b) => b.stage is Stage.Fail)
+        frame.title(" flashbench · {plan.station} · {io.basename(plan.firmware)} ")
+        frame.render(t, frame.area().shrink_bottom(1))
+        frame.text(0, frame.height() - 1,
+            " {passed} pass  {failed} fail  │  1-9 rerun fixture  r rerun failed  q quit ", style.reverse())
+    })
+}
+
+# ── main ────────────────────────────────────────────────────────────────────
+
+fn main(args: [str]) -> int! {
+    let plan  = yaml.decode<Plan>(io.read_text(args.get(0) or "plan.yaml")?)?
+    let image = io.read_bytes(plan.firmware)?
+    let image_crc = crc32(image)
+    log.to_file("flashbench.log")
+    log.info("firmware {plan.firmware}: {image.len()} bytes, crc32 {image_crc:08x}")
+    io.mkdir_all("logs")?
+
+    let token = env.get(plan.pdu.token_env) or return error("set ${plan.pdu.token_env} for the PDU")
+    let pdu = http.client(plan.pdu.url, headers: {"Authorization": "Bearer {token}"}, timeout: 3.0)
+    let mes = http.client(plan.mes_url, timeout: 5.0)
+
+    let new_sheet = !io.exists("results.csv")
+    let sheet = csv.append("results.csv")?
+    if new_sheet {
+        sheet.write_row(["time", "station", "fixture", "serial", "result", "reason", "duration_s"]
+                        + plan.tests.map(fn(t) => t.name))
+    }
+
+    var boards = plan.fixtures.map(Board.idle)
+
+    fn start(i: int) {
+        if boards[i].busy() { return }
+        let b = Board.fresh(plan.fixtures[i])
+        boards[i] = b
+        sched.spawn(fn() {                               # cooperative task; serial I/O yields
+            run_board(plan, b, image, image_crc, pdu) catch e { b.stage = Stage.Fail("{e}") }
+            report(plan, b, image_crc, mes, sheet) catch e { log.error("fixture {b.fx.outlet} report: {e}") }
+        })
+    }
+
+    for i in 0..boards.len() { start(i) }
+
+    let ui = dashboard(plan, boards)
+    ui.on_key(fn(k) {
+        match k {
+            key.Char('q') => if boards.any(fn(b) => b.busy()) { ui.flash("boards still running — Q to force") } else { ui.quit() }
+            key.Char('Q') => ui.quit()
+            key.Char('r') => for (i, b) in boards.enumerate() { if b.stage is Stage.Fail { start(i) } }
+            key.Char(c) if c.is_digit() => {
+                let i = c.to_int() - 1
+                if i >= 0 and i < boards.len() { start(i) }
+            }
+            _ => {}
+        }
+    })
+    ui.run(refresh_hz: 10, scheduler: sched.current())?
+    return if boards.any(fn(b) => b.stage is Stage.Fail) { 1 } else { 0 }
+}

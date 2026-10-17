@@ -1,0 +1,3 @@
+# Independent C engine; the VM adapter is built as part of the full stdlib.
+library :termscript_crdt, sources: ['rga.c']
+install_file 'rga.h', 'include/termscript/stdlib/crdt/rga.h'

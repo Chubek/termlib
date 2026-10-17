@@ -89,6 +89,16 @@
 #include "word_motion/word_motion.h"
 #include "x11/x11.h"
 #include "yaml/yaml.h"
+#include "gapbuffer/gapbuffer.h"
+#include "piecetable/piecetable.h"
+#include "memory/memory.h"
+#include "persian_script/persian_script.h"
+#include "set/set.h"
+#include "stdio/stdio.h"
+#include "datagram/datagram.h"
+#include "procfs/procfs.h"
+#include "sysfs/sysfs.h"
+#include "crdt/crdt.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -96,7 +106,7 @@ extern "C"
 #endif
 
 /* Number of bundled native modules. */
-#define TS_STDLIB_NMODULES 69
+#define TS_STDLIB_NMODULES 79
 /* Metadata is borrowed immutable static storage; out-of-range returns NULL. */
 size_t ts_stdlib_module_count (void);
 const TS_Module *ts_stdlib_module_at (size_t index);

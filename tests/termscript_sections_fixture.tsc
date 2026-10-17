@@ -1,0 +1,46 @@
+# Runnable: section scheduling, aliases, configuration and managed resources.
+@alias Global :G
+@alias Runtime :R
+@alias Array :A
+@define $ENVELOPE $E
+
+.interface
+    R:Declare:Section(:Interface)
+    R:Declare:Section(:Prelude)
+    R:Declare:Section(:Config)
+    R:Declare:Section(:Data)
+    R:Declare:Section(:Program)
+.end
+
+.section Interface
+    G:Declare:Symbol(:Array)
+.end
+
+.section Prelude
+    lifetime Array := G:Import("std.array")
+        => R:Inject($E->Library, G:Array);
+.end
+
+.section Config
+    config Answer := G:add(20, G:add(20, 2));
+    config Settings := {"answer": Answer, "modes": ["vm", "c", "qbe"]};
+.end
+
+.section Data
+    lifetime Values := A:new()
+        ~> R:RuntimeError("array initialization failed: ~s", $ENVELOPE->Msg)
+        -> R:DieGracefully(:EXIT_FAILURE)
+        => G:puts("array initialized");
+.end
+
+.section Program
+    G:OnStartup(:Prelude);
+    G:OnStartup(:Config);
+    G:OnStartup(:Data);
+    A:push(Values, Settings->answer);
+    if not G:eq(A:sum(Values), 42) then
+        R:Exit(:EXIT_FAILURE);
+    end
+    G:puts("sections OK");
+    R:Exit(:EXIT_SUCCESS);
+.end

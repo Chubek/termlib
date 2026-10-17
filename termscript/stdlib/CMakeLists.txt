@@ -25,6 +25,7 @@ set(TS_STDLIB_MODULES
   ipc json key layout list log map menu notify panel pipe pty prompt prompt_string readline regex rules
   sched screen shell signal socket stream style syntax table termcap terminfo test text_search theme
   terminal termios toml tui utf8 verbatim vterm widget word_motion yaml drm poll x11 compositor emulator
+  gapbuffer piecetable memory persian_script set stdio datagram procfs sysfs crdt
 )
 
 set(TS_STDLIB_SOURCES
@@ -35,6 +36,7 @@ set(TS_STDLIB_SOURCES
   common/text.c
   common/grid.c
   common/html.c
+  common/fs_view.c
   ts_stdlib.c
 )
 foreach (m IN LISTS TS_STDLIB_MODULES)
@@ -43,7 +45,35 @@ foreach (m IN LISTS TS_STDLIB_MODULES)
   else()
     list(APPEND TS_STDLIB_SOURCES ${m}/${m}.c)
   endif()
+  if(m STREQUAL "shell")
+    set(module_source "${m}/${m}.cpp")
+  else()
+    set(module_source "${m}/${m}.c")
+  endif()
+  foreach(required IN ITEMS "${module_source}" "${m}/${m}.h" "${m}/${m}.tsc")
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${required}")
+      message(FATAL_ERROR "Shipped Termscript module is missing ${required}")
+    endif()
+    file(SIZE "${CMAKE_CURRENT_SOURCE_DIR}/${required}" required_size)
+    if(required_size EQUAL 0)
+      message(FATAL_ERROR "Shipped Termscript module has an empty placeholder: ${required}")
+    endif()
+  endforeach()
 endforeach ()
+
+# Aliases have real descriptors in font.c/css.c, not separate .c files.
+foreach(m IN ITEMS font_discovery stylesheet)
+  foreach(extension IN ITEMS h tsc)
+    set(required "${CMAKE_CURRENT_SOURCE_DIR}/${m}/${m}.${extension}")
+    if(NOT EXISTS "${required}")
+      message(FATAL_ERROR "Shipped Termscript alias is missing ${required}")
+    endif()
+    file(SIZE "${required}" required_size)
+    if(required_size EQUAL 0)
+      message(FATAL_ERROR "Shipped Termscript alias has an empty placeholder: ${required}")
+    endif()
+  endforeach()
+endforeach()
 
 # Vendored third-party sources (warning-cleanliness of our own files
 # is enforced below; vendored files compile with -w).
@@ -111,6 +141,7 @@ set(LEXBOR_INSTALL_HEADERS OFF CACHE BOOL "" FORCE)
 add_subdirectory(../../third_party/lexbor ${CMAKE_CURRENT_BINARY_DIR}/lexbor)
 
 add_library(termscript_stdlib STATIC
+  $<TARGET_OBJECTS:termscript_crdt_core>
   ${TS_STDLIB_SOURCES}
   ${TS_STDLIB_TOML_C}
   ${TS_STDLIB_ISOCLINE_C}
@@ -274,6 +305,7 @@ install(FILES shell/README.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/shell)
 install(FILES emulator-backends.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib)
+install(FILES new-modules.md MANIFEST.yaml DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib)
 install(FILES x11/window.tsc DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/x11)
 install(FILES drm/discover.tsc DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/drm)
 install(FILES compositor/README.md DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/compositor)

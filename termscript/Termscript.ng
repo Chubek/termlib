@@ -1,1 +1,154 @@
-// supposed to be a third_party/novoparse file
+%grammar Termscript;
+%start program;
+%disambiguate first;
+
+# A comment includes its newline so scannerless prefix matching cannot turn
+# an arbitrary comment suffix back into executable statements. The adapter
+# supplies one final newline at EOF without shifting any source positions.
+%token TRIVIA /([ \t\r\n]+|#[^\n]*\n)+/;
+%token HSPACE /([ \t\r]+|#[^\n]*)+/;
+%token NUMBER /-?(0[xX][0-9a-fA-F]+|0|[1-9][0-9]*)/;
+%token STRING /"([^"\\]|\\.)*"/;
+# Scannerless disambiguation must not consume a block terminator as a name,
+# then close the block at the "end" substring in a later method like render.
+# This POSIX ERE excludes exact keywords (no lookahead). Reproduce with
+# tools/identifier_pattern.py; WORD permits keyword methods/symbols.
+%token IDENT /([A-Z_bghjkmpqsx-z][A-Za-z0-9_]*|o(|[0-9A-Z_a-qs-z][A-Za-z0-9_]*|r[0-9A-Z_a-z][A-Za-z0-9_]*)|d(|[0-9A-Z_a-np-z][A-Za-z0-9_]*|o[0-9A-Z_a-z][A-Za-z0-9_]*)|t(|[0-9A-Z_a-gi-z][A-Za-z0-9_]*|h(|[0-9A-Z_a-df-z][A-Za-z0-9_]*|e(|[0-9A-Z_a-mo-z][A-Za-z0-9_]*|n[0-9A-Z_a-z][A-Za-z0-9_]*)))|e(|[0-9A-Z_a-kmo-z][A-Za-z0-9_]*|n(|[0-9A-Z_a-ce-z][A-Za-z0-9_]*|d[0-9A-Z_a-z][A-Za-z0-9_]*)|l(|[0-9A-Z_a-rt-z][A-Za-z0-9_]*|s(|[0-9A-Z_a-df-z][A-Za-z0-9_]*|e[0-9A-Z_a-z][A-Za-z0-9_]*)))|w(|[0-9A-Z_a-gi-z][A-Za-z0-9_]*|h(|[0-9A-Z_a-hj-z][A-Za-z0-9_]*|i(|[0-9A-Z_a-km-z][A-Za-z0-9_]*|l(|[0-9A-Z_a-df-z][A-Za-z0-9_]*|e[0-9A-Z_a-z][A-Za-z0-9_]*))))|i(|[0-9A-Z_a-eg-z][A-Za-z0-9_]*|f[0-9A-Z_a-z][A-Za-z0-9_]*)|c(|[0-9A-Z_a-np-z][A-Za-z0-9_]*|o(|[0-9A-Z_a-mo-z][A-Za-z0-9_]*|n(|[0-9A-Z_a-eg-rt-z][A-Za-z0-9_]*|s(|[0-9A-Z_a-su-z][A-Za-z0-9_]*|t[0-9A-Z_a-z][A-Za-z0-9_]*)|f(|[0-9A-Z_a-hj-z][A-Za-z0-9_]*|i(|[0-9A-Z_a-fh-z][A-Za-z0-9_]*|g[0-9A-Z_a-z][A-Za-z0-9_]*)))))|l(|[0-9A-Z_a-df-hj-z][A-Za-z0-9_]*|i(|[0-9A-Z_a-eg-z][A-Za-z0-9_]*|f(|[0-9A-Z_a-df-z][A-Za-z0-9_]*|e(|[0-9A-Z_a-su-z][A-Za-z0-9_]*|t(|[0-9A-Z_a-hj-z][A-Za-z0-9_]*|i(|[0-9A-Z_a-ln-z][A-Za-z0-9_]*|m(|[0-9A-Z_a-df-z][A-Za-z0-9_]*|e[0-9A-Z_a-z][A-Za-z0-9_]*))))))|e(|[0-9A-Z_a-su-z][A-Za-z0-9_]*|t[0-9A-Z_a-z][A-Za-z0-9_]*))|n(|[0-9A-Z_a-np-z][A-Za-z0-9_]*|o(|[0-9A-Z_a-su-z][A-Za-z0-9_]*|t[0-9A-Z_a-z][A-Za-z0-9_]*))|a(|[0-9A-Z_a-mo-z][A-Za-z0-9_]*|n(|[0-9A-Z_a-ce-z][A-Za-z0-9_]*|d[0-9A-Z_a-z][A-Za-z0-9_]*))|v(|[0-9A-Z_b-z][A-Za-z0-9_]*|a(|[0-9A-Z_a-qs-z][A-Za-z0-9_]*|r[0-9A-Z_a-z][A-Za-z0-9_]*))|f(|[0-9A-Z_a-mo-z][A-Za-z0-9_]*|n[0-9A-Z_a-z][A-Za-z0-9_]*)|r(|[0-9A-Z_a-df-z][A-Za-z0-9_]*|e(|[0-9A-Z_a-su-z][A-Za-z0-9_]*|t(|[0-9A-Z_a-tv-z][A-Za-z0-9_]*|u(|[0-9A-Z_a-qs-z][A-Za-z0-9_]*|r(|[0-9A-Z_a-mo-z][A-Za-z0-9_]*|n[0-9A-Z_a-z][A-Za-z0-9_]*)))))|u(|[0-9A-Z_a-rt-z][A-Za-z0-9_]*|s(|[0-9A-Z_a-df-z][A-Za-z0-9_]*|e[0-9A-Z_a-z][A-Za-z0-9_]*)))/;
+%token WORD /[A-Za-z_][A-Za-z0-9_]*/;
+%token VARIABLE /\$[A-Za-z_][A-Za-z0-9_]*/;
+
+%left "or";
+%left "and";
+%left "==" "!=" "<=" ">=" "<" ">";
+%left "|";
+%left "^";
+%left "&";
+%left "<<" ">>";
+%left "+" "-";
+%left "*" "/" "%";
+
+# NovoParse-backed Termscript grammar.
+#
+# This file is the parser source for the currently implemented Termscript
+# language. Native calls accept both the
+# historical whitespace form (`G:puts value`) and the parenthesized form used by
+# the design examples for simple scalar/reference arguments (`G:puts(value)`).
+
+program: layout (stmt layout)* simple? layout => Program;
+legacy_program: layout (stmt layout)* => Program;
+
+# TRIVIA already matches a complete region. Repeating it in the grammar creates
+# exponentially many equivalent partitions of indented/commented blocks.
+layout: TRIVIA? => Layout;
+gap: TRIVIA => Gap;
+
+stmt: simple terminator => Stmt
+    | while_stmt => Stmt
+    | if_stmt => Stmt
+    | function_decl => Stmt
+    | declaration => Stmt
+    | alias_decl => Stmt
+    | define_decl => Stmt
+    | interface_decl => Stmt
+    | section_decl => Stmt;
+
+terminator: layout ";" | HSPACE? "\n";
+simple: const_decl => Simple
+    | local_decl => Simple
+    | use_decl => Simple
+    | return_stmt => Simple
+    | config_decl => Stmt
+    | lifetime_decl => Stmt
+    | declaration => Stmt
+    | assign_stmt => Stmt
+    | expr_stmt => Stmt;
+
+name: IDENT => Name | VARIABLE => Name;
+const_decl: "const" gap name type_annotation? layout "=" layout expr => ConstDecl;
+local_decl: "let" gap name type_annotation? layout "=" layout expr => ConstDecl
+          | "var" gap name type_annotation? layout "=" layout expr => AssignStmt;
+config_decl: "config" gap name layout ":=" layout expr => ConfigDecl;
+lifetime_decl: "lifetime" gap name layout ":=" layout expr => LifetimeDecl;
+assign_stmt: name layout "=" layout expr => AssignStmt
+           | name layout ":=" layout expr => AssignStmt
+           | name layout compound_op layout expr => CompoundAssign;
+compound_op: "+=" | "-=" | "*=" | "/=" | "%=";
+use_decl: "use" gap IDENT (layout "," layout IDENT)* => UseDecl;
+return_stmt: "return" gap expr => ReturnStmt | "return" => ReturnStmt;
+function_decl: "fn" gap name layout "(" layout parameters? layout ")" return_type? layout "{" program "}" => FunctionDecl;
+parameters: parameter (layout "," layout parameter)* layout ","? => Parameters;
+parameter: name type_annotation? => Parameter;
+type_annotation: layout ":" layout type => TypeAnnotation;
+return_type: layout "->" layout type => ReturnType;
+type: IDENT ("." IDENT)* ("?" | "!")? | "[" layout type layout "]" ("?" | "!")?;
+alias_decl: "@alias" gap IDENT gap ":" IDENT layout => AliasDecl;
+define_decl: "@define" gap name gap name layout => DefineDecl;
+interface_decl: ".interface" layout legacy_program layout ".end" => InterfaceDecl;
+section_decl: ".section" gap IDENT layout legacy_program layout ".end" => SectionDecl;
+declaration: name layout ":Declare:" WORD layout "(" layout ":" WORD layout ")" layout ";"? => Declaration;
+expr_stmt: expr => ExprStmt;
+while_stmt: "while" gap expr gap "do" layout legacy_program layout "end" => WhileStmt
+          | "while" gap expr layout "{" program "}" => WhileStmt;
+if_stmt: "if" gap expr gap "do" layout legacy_program layout if_tail => IfStmt
+       | "if" gap expr gap "then" layout legacy_program layout if_tail => IfStmt
+       | "if" gap expr layout "{" program "}" brace_else => IfStmt;
+brace_else: layout "else" layout "{" program "}" => ElseTail | => NoElseTail;
+if_tail: "else" layout legacy_program layout "end" => ElseTail
+       | "end" => NoElseTail;
+
+expr: fallback layout "~>" layout unary flow_error_tail => FlowExpr
+    | fallback layout "=>" layout unary => SuccessExpr
+    | fallback => Expr;
+flow_error_tail: layout "->" layout unary flow_success_tail => ErrorTail
+               | flow_success_tail => ErrorTail;
+flow_success_tail: layout "=>" layout unary => SuccessTail
+                 | layout => NoSuccessTail;
+fallback: fallback gap "or" gap fallback %prec "or" => OrExpr
+        | fallback gap "and" gap fallback %prec "and" => AndExpr
+        | fallback layout compare_op layout fallback %prec "==" => BinaryExpr
+        | fallback layout "|" layout fallback %prec "|" => BitOrExpr
+        | fallback layout "^" layout fallback %prec "^" => BitXorExpr
+        | fallback layout "&" layout fallback %prec "&" => BitAndExpr
+        | fallback layout shift_op layout fallback %prec "<<" => BinaryExpr
+        | fallback layout add_op layout fallback %prec "+" => BinaryExpr
+        | fallback layout mul_op layout fallback %prec "*" => BinaryExpr
+        | unary => Expr;
+compare_op: "==" | "!=" | "<=" | ">=" | "<" | ">" => Operator;
+shift_op: "<<" | ">>" => Operator;
+add_op: "+" | "-" => Operator;
+mul_op: "*" | "/" | "%" => Operator;
+
+unary: "&" name => RefExpr
+     | "not" gap unary => NotExpr
+     | "!" unary => NotExpr
+     | "-" unary => NegExpr
+     | "(" layout expr layout ")" => GroupExpr
+     | name layout "->" IDENT => FieldExpr
+     | ":" WORD => SymbolExpr
+     | "[" layout arg_list layout "]" => ListExpr
+     | "[" layout "]" => ListExpr
+     | "{" layout map_entries layout "}" => MapExpr
+     | "{" layout "}" => MapExpr
+     | call => CallExpr
+     | name => IdentExpr
+     | NUMBER => NumberExpr
+     | STRING => StringExpr;
+
+call: name layout ":" layout function_name call_args => Call
+    | name layout "." layout WORD layout "(" layout arg_list? layout ")" => DotCall
+    | name layout "(" layout arg_list? layout ")" => InvokeCall;
+function_name: WORD (":" WORD)* => FunctionName;
+map_entries: map_entry (layout "," layout map_entry)* layout ","? => MapEntries;
+map_entry: STRING layout ":" layout expr => MapEntry;
+
+call_args: (gap arg)* => SpaceArgs
+         | layout "(" layout arg_list layout ")" => ParenArgs
+         | layout "(" layout ")" => EmptyParenArgs;
+
+arg_list: expr (layout "," layout expr)* layout ","? => ArgList;
+
+arg: STRING => ArgString
+   | NUMBER => ArgNumber
+   | "&" name => ArgRef
+   | ":" WORD => ArgSymbol
+   | name => ArgWord;

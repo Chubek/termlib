@@ -57,8 +57,10 @@ target_link_libraries(termlib PUBLIC Threads::Threads)
 
 # ── libtermscript_standalone (embedding + extension API, no Termlib) ─
 add_library(termscript_standalone STATIC
-  termscript/ts_runtime.c
-  termscript/ts_parser_ng.c
+  termscript/source/runtime.c
+  termscript/source/parser.c
+  termscript/backends/C.cpp
+  termscript/backends/QBE.cpp
   ${TERMLIB_PARSER_H}
 )
 target_include_directories(termscript_standalone PUBLIC
@@ -68,6 +70,8 @@ target_include_directories(termscript_standalone PUBLIC
 target_include_directories(termscript_standalone PRIVATE
   ${TERMLIB_PARSER_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/novoparse/runtime
+  ${CMAKE_CURRENT_SOURCE_DIR}/termscript
+  ${CMAKE_CURRENT_SOURCE_DIR}/termscript/include
 )
 target_link_libraries(termscript_standalone PRIVATE Threads::Threads novoparse_runtime)
 
@@ -86,7 +90,7 @@ if(TERMSCRIPT_JITERATI)
     message(FATAL_ERROR "TERMSCRIPT_JITERATI requires the bundled third_party/jiterati sources")
   endif()
   target_sources(termscript_standalone PRIVATE
-    termscript/ts_jiterati.cpp
+    termscript/backends/Jiterati.cpp
     third_party/jiterati/src/JIT.cpp
     third_party/jiterati/BE/AMD64/Backend.cpp
   )
@@ -112,6 +116,7 @@ target_include_directories(termscript PRIVATE
 target_link_libraries(termscript PUBLIC termlib termscript_standalone)
 
 # ── libtermscript_stdlib (hybrid C + Termscript companion modules) ─
+add_subdirectory(termscript/stdlib/crdt)
 add_subdirectory(termscript/stdlib)
 if(TARGET termscript_stdlib)
   # Every DT_TermVM carries the stdlib natively (registered in
@@ -139,12 +144,25 @@ endif()
 # NOTE: the binary cannot land next to the target (domlibs/termlib/)
 # because OUTPUT_NAME "termscript" would collide with the termscript/
 # source directory; it goes to the build-tree bin/ instead.
-add_executable(termscript-driver termscript/driver.c)
+add_executable(termscript-driver termscript/source/driver.c)
 set_target_properties(termscript-driver PROPERTIES
   OUTPUT_NAME termscript
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+if(APPLE)
+  set_property(TARGET termscript-driver PROPERTY INSTALL_RPATH "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
+elseif(UNIX)
+  set_property(TARGET termscript-driver PROPERTY INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+endif()
 target_link_libraries(termscript-driver PRIVATE termscript)
+add_executable(termak termscript/tools/termak.c)
+target_compile_definitions(termak PRIVATE
+  TERMAK_BUILD_ENTRY="${CMAKE_CURRENT_SOURCE_DIR}/termscript/termak/Termakfile.rb"
+  TERMAK_INSTALL_ENTRY="${CMAKE_INSTALL_FULL_DATADIR}/termscript/termak/Termakfile.rb")
+set_target_properties(termak PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+install(TARGETS termak RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY termscript/termak/ DESTINATION ${CMAKE_INSTALL_DATADIR}/termscript/termak
+  FILES_MATCHING PATTERN "*.rb")
 set(TS_NATIVE_DEFAULT OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(TS_NATIVE_DEFAULT ON)
@@ -194,7 +212,7 @@ endif()
 # ── install ──────────────────────────────────────────────────────────
 include(GNUInstallDirs)
 
-install(TARGETS termlib termscript termscript_standalone
+install(TARGETS termlib termscript termscript_standalone novoparse_runtime
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -207,9 +225,13 @@ install(FILES termlib.h termlib.hpp
 install(FILES termscript/termscript.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript
 )
+install(DIRECTORY termscript/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript/include
+  PATTERN "Termscript.hpp" EXCLUDE)
 install(FILES termscript/Termscript.ng
   DESTINATION ${CMAKE_INSTALL_DATADIR}/termlib
 )
+install(FILES termscript/IMPLEMENTATION.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES termscript/termak/README.md DESTINATION ${CMAKE_INSTALL_DOCDIR}/termak)
 
 # Project documentation and the 22-chapter manual.
 install(FILES README.md GUIDE.md INSTALL.md
@@ -227,6 +249,60 @@ add_custom_target(termlib-manual
 )
 
 if(BUILD_TESTING)
+  find_program(TERMAK_RUBY ruby)
+  if(TERMAK_RUBY)
+    add_test(NAME termak COMMAND ${TERMAK_RUBY} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_termak.rb)
+  endif()
+  add_executable(test_termscript_modern tests/test_termscript_modern.c)
+  target_link_libraries(test_termscript_modern PRIVATE termscript_standalone)
+  add_test(NAME termscript_modern COMMAND test_termscript_modern)
+  if(TARGET termscript_stdlib)
+    add_executable(test_termscript_crdt tests/test_termscript_crdt.c)
+    target_link_libraries(test_termscript_crdt PRIVATE termscript_stdlib)
+    add_test(NAME termscript_crdt COMMAND test_termscript_crdt)
+    set_tests_properties(termscript_crdt PROPERTIES TIMEOUT 10)
+    add_test(NAME termscript_crdt_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_crdt.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/crdt-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=CRDT convergence OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    set_tests_properties(termscript_crdt_backends PROPERTIES TIMEOUT 30)
+    add_executable(test_termscript_new_stdlib tests/test_termscript_new_stdlib.c)
+    target_link_libraries(test_termscript_new_stdlib PRIVATE termscript_stdlib)
+    add_test(NAME termscript_new_stdlib COMMAND test_termscript_new_stdlib)
+    add_executable(test_termscript_fs_view tests/test_termscript_fs_view.c)
+    target_link_libraries(test_termscript_fs_view PRIVATE termscript_stdlib)
+    add_test(NAME termscript_fs_view COMMAND test_termscript_fs_view)
+    set_tests_properties(termscript_fs_view PROPERTIES TIMEOUT 10)
+    add_test(NAME termscript_fs_view_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_fs_view.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/fs-view-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_fs_view.cmake)
+    set_tests_properties(termscript_fs_view_backends PROPERTIES TIMEOUT 30)
+    add_test(NAME termscript_entry COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/entry-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_entry.cmake)
+    add_test(NAME termscript_new_stdlib_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_new_stdlib.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/new-stdlib-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=new stdlib OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    add_test(NAME termscript_modern_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_modern.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/modern-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=example-style core OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+  endif()
   add_test(NAME termscript_parser_regression COMMAND
     $<TARGET_FILE:termscript-driver>
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_parser_regression.tsc)
@@ -276,7 +352,7 @@ if(BUILD_TESTING)
   if(TARGET termscript_stdlib)
     add_test(NAME termscript_sections_backends COMMAND ${CMAKE_COMMAND}
       -DDRIVER=$<TARGET_FILE:termscript-driver>
-      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/termscript/examples/sections.tsc
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_sections_fixture.tsc
       -DWORK=${CMAKE_CURRENT_BINARY_DIR}/section-backend-test
       -DNATIVE=${TERMSCRIPT_NATIVE}
       -DJITERATI=${TERMSCRIPT_JITERATI}

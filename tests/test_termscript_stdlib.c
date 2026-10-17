@@ -360,7 +360,7 @@ socket_tests (void)
 static void
 parser_tests (void)
 {
-  const char *bad[] = {"const x = G:load \"std.utf8\"; G:puts", "const x = \"\\x00\";", "const x = 99999999999999999999999;", "if true do G:puts \"x\";", "value = ;"};
+  const char *bad[] = {"const x = G:load \"std.utf8\"; G:puts(", "const x = \"\\x00\";", "const x = 99999999999999999999999;", "if true do G:puts \"x\";", "value = ;"};
   for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++)
     {
       char *out = NULL;

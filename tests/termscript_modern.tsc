@@ -1,0 +1,39 @@
+# Runnable core of the example-style language, shared across backends.
+use list
+const global = 7
+fn read_global() { return global }
+
+fn factorial(n: int) -> int {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
+fn early(n: int) -> int {
+    while true {
+        if n == 1 { return 42 }
+        return 0
+    }
+}
+
+fn main(args: [str]) -> int! {
+    const smallest = -9223372036854775808
+    if smallest != -0x8000000000000000 { return 13 }
+    if smallest + 1 != -9223372036854775807 { return 14 }
+    var global = 1
+    if read_global() != 7 { return 12 }
+    var x = 0
+    while x < 4 { x += 1 }
+    if x != 4 { return 1 }
+    if factorial(5) != 120 { return 2 }
+    if early(1) != 42 { return 3 }
+    if (0x80 >> 4) != 8 { return 4 }
+    if (0x10 | 3) != 19 { return 5 }
+    if (7 & 3) != 3 { return 6 }
+    if (7 ^ 3) != 4 { return 7 }
+    if 1 + 2 * 3 != 7 { return 8 }
+    if false and G:die("and did not short circuit") { return 9 }
+    if !(true or G:die("or did not short circuit")) { return 10 }
+    if list.len(args) != 0 { return 11 }
+    print("example-style " + "core OK")
+    return 0
+}

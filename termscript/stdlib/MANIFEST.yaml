@@ -1,0 +1,33 @@
+schema: 1
+native_module_count: 79
+registry: ts_stdlib.c
+companion_layout: "<name>/<name>.tsc"
+new_modules:
+  - datagram
+  - gapbuffer
+  - memory
+  - persian_script
+  - piecetable
+  - set
+  - stdio
+  - procfs
+  - sysfs
+  - crdt
+unimplemented_modules:
+  - evdev
+  - font_shape
+  - grammar
+  - input
+  - mqueue
+  - peg
+  - shm
+  - uvdev
+  - wayland
+aliases_implemented_elsewhere:
+  font_discovery: font/font.c
+  stylesheet: css/css.c
+infrastructure_directories: [common, gen, q]
+unused_legacy_directory: emulatotor
+notes:
+  - "Empty per-module Termakfiles remain unfinished."
+  - "Existing native APIs do not yet implement all application-example APIs."

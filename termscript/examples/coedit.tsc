@@ -1,0 +1,369 @@
+# coedit.tms — a serverless, peer-to-peer collaborative editor for the terminal
+#
+# Everyone on the LAN who opens the same document name edits one shared text.
+# There is no server: edits are CRDT operations (an RGA sequence) that
+# commute, so peers converge whatever order UDP packets arrive in. Lost
+# packets are repaired by periodic anti-entropy using version vectors.
+#
+#   coedit notes.md            edit locally and share as "notes.md"
+#   coedit --join notes.md     start empty and pull the text from peers
+#
+# Also: undo that only undoes *your* edits, coloured remote cursors, syntax
+# highlighting, right-to-left display for Persian lines, ZWNJ-aware word
+# motion, and incremental search that folds ي/ی and ك/ک together.
+#
+# Keys: arrows, C-←/→ word, Home/End, C-z undo, C-y redo, C-f search,
+#       C-s save, C-q quit.
+
+use crdt, piecetable, edit_history, datagram, codec, sched
+use tui, key, style, color, theme, toml
+use syntax, grammar, bidi, persian_script, word_motion, text_search, utf8, io, env, log
+
+const GROUP = "239.71.71.71"
+const PORT  = 47171
+const MTU_BUDGET = 1200
+
+# ZWNJ (U+200C) sits *inside* Persian words — می‌خواهم is one word — and a
+# kashida (ـ) is decoration, not a boundary.
+let WORD_RULES = word_motion.rules(zwnj_joins: true, kashida_is_letter: true)
+
+# ── wire format ─────────────────────────────────────────────────────────────
+
+enum Packet {
+    Ops(doc: str, ops: [crdt.Op])
+    Hello(doc: str, site: crdt.SiteId, name: str, have: crdt.VersionVector)
+    Cursor(doc: str, site: crdt.SiteId, at: crdt.Id?)       # anchored to a character, not an index
+}
+
+# ── the document ────────────────────────────────────────────────────────────
+# The CRDT is the source of truth; the piece table mirrors its visible text
+# for fast index-based reads. Every change flows CRDT → effect → piece table,
+# whether it was typed here or arrived over the network.
+
+struct Doc {
+    name:  str
+    seq:   crdt.Rga<char>
+    text:  piecetable.Table
+    hist:  edit_history.History<[crdt.Op]>        # our own edits only
+    dirty: bool
+}
+
+impl Doc {
+    # Integrates foreign (or locally generated but not yet applied) ops.
+    fn apply(self, ops: [crdt.Op]) -> [crdt.Effect] {
+        var fx = []
+        for op in ops {
+            for e in self.seq.integrate(op) {           # duplicates are ignored: idempotent
+                match e {
+                    crdt.Effect.Insert(i, s) => self.text.insert(i, s)
+                    crdt.Effect.Delete(i, n) => self.text.delete(i, n)
+                }
+                fx.push(e)
+            }
+        }
+        self.dirty = self.dirty or !fx.is_empty()
+        return fx
+    }
+
+    fn insert(self, at: int, s: str) -> [crdt.Op] {
+        let ops = self.seq.insert_local(at, s.chars())
+        self.text.insert(at, s)
+        self.hist.record(ops, coalesce: "type")         # a burst of typing undoes as one step
+        self.dirty = true
+        return ops
+    }
+
+    fn delete(self, at: int, n: int) -> [crdt.Op] {
+        if n <= 0 { return [] }
+        let ops = self.seq.delete_local(at, n)
+        self.text.delete(at, n)
+        self.hist.record(ops, coalesce: "delete")
+        self.dirty = true
+        return ops
+    }
+
+    # Undo inverts our ops by element id, so it removes exactly the characters
+    # we typed even if others have edited all around them since.
+    fn undo(self) -> ([crdt.Op], [crdt.Effect]) {
+        let mine = self.hist.undo() or return ([], [])
+        let inv = self.seq.invert(mine)                 # insert → tombstone, delete → revive
+        return (inv, self.apply(inv))
+    }
+
+    fn redo(self) -> ([crdt.Op], [crdt.Effect]) {
+        let mine = self.hist.redo() or return ([], [])
+        let again = self.seq.reapply(mine)
+        return (again, self.apply(again))
+    }
+}
+
+# ── peers ───────────────────────────────────────────────────────────────────
+
+struct Peer { name: str, tint: color.Color, cursor: crdt.Id?, last_seen: float }
+
+let PEER_TINTS = [color.ansi(4), color.ansi(5), color.ansi(6), color.ansi(3), color.ansi(2)]
+
+# ── the editor ──────────────────────────────────────────────────────────────
+
+struct Editor {
+    doc:        Doc
+    me:         crdt.SiteId
+    my_name:    str
+    path:       str
+    cursor:     int                  # index into the visible text
+    top:        int                  # first visible line
+    peers:      {crdt.SiteId: Peer}
+    net:        datagram.Socket
+    hl:         syntax.Highlighter
+    th:         theme.Theme
+    search:     text_search.Incremental?
+    pre_search: int
+    status:     str
+    quit_armed: bool
+}
+
+impl Editor {
+    # ── network ────────────────────────────────────────────────────────
+    fn send(self, p: Packet, to: datagram.Addr? = nil) {
+        let bytes = codec.msgpack.encode(p)
+        self.net.send_to(to or datagram.Addr(GROUP, PORT), bytes) catch e { self.status = "network: {e}" }
+    }
+
+    fn publish(self, ops: [crdt.Op]) {
+        for batch in codec.chunk_by_size(ops, MTU_BUDGET, codec.msgpack) {
+            self.send(Packet.Ops(self.doc.name, batch))
+        }
+        self.send(Packet.Cursor(self.doc.name, self.me, self.doc.seq.id_at(self.cursor)))
+    }
+
+    fn hello(self) {
+        self.send(Packet.Hello(self.doc.name, self.me, self.my_name, self.doc.seq.version()))
+    }
+
+    fn on_packet(self, bytes: [byte], from: datagram.Addr) {
+        let p = codec.msgpack.decode<Packet>(bytes) catch _ { return }   # someone else's traffic
+        match p {
+            Packet.Ops(doc, ops) if doc == self.doc.name => {
+                let fx = self.doc.apply(ops)
+                self.cursor = crdt.transform_index(self.cursor, fx)     # keep our caret on its character
+                self.changed(fx)
+            }
+            Packet.Hello(doc, site, name, have) if doc == self.doc.name and site != self.me => {
+                let fresh = !self.peers.has(site)
+                self.touch(site, name)
+                # Anti-entropy: unicast exactly what this peer is missing…
+                let missing = self.doc.seq.ops_since(have)
+                for batch in codec.chunk_by_size(missing, MTU_BUDGET, codec.msgpack) {
+                    self.send(Packet.Ops(self.doc.name, batch), to: from)
+                }
+                # …and answer a newcomer at once so it learns what *we* have.
+                if fresh { self.hello() }
+            }
+            Packet.Cursor(doc, site, at) if doc == self.doc.name and site != self.me => {
+                if let peer = self.peers[site] { peer.cursor = at; peer.last_seen = sched.now() }
+            }
+            _ => {}
+        }
+    }
+
+    fn touch(self, site: crdt.SiteId, name: str) {
+        if let p = self.peers[site] { p.last_seen = sched.now(); return }
+        self.peers[site] = Peer { name, tint: PEER_TINTS[self.peers.len() % PEER_TINTS.len()], cursor: nil, last_seen: sched.now() }
+        self.status = "{name} joined"
+    }
+
+    fn changed(self, fx: [crdt.Effect]) {
+        self.hl.edit(self.doc.text, fx)               # incremental re-highlight of touched lines
+        if let s = self.search { s.refresh(self.doc.text) }
+    }
+
+    # ── editing ────────────────────────────────────────────────────────
+    fn type_text(self, s: str) {
+        let ops = self.doc.insert(self.cursor, s)
+        self.changed([crdt.Effect.Insert(self.cursor, s)])
+        self.cursor += s.char_len()
+        self.publish(ops)
+    }
+
+    fn delete_range(self, a: int, b: int) {
+        let (lo, hi) = (min(a, b), max(a, b))
+        let ops = self.doc.delete(lo, hi - lo)
+        self.changed([crdt.Effect.Delete(lo, hi - lo)])
+        self.cursor = lo
+        self.publish(ops)
+    }
+
+    fn undo_redo(self, result: ([crdt.Op], [crdt.Effect])) {
+        let (ops, fx) = result
+        if ops.is_empty() { self.status = "nothing to undo"; return }
+        if let last = fx.last() { self.cursor = last.end_index() }
+        self.changed(fx)
+        self.publish(ops)
+    }
+
+    fn save(self) {
+        io.write_atomic(self.path, self.doc.text.to_string()) catch e { self.status = "save failed: {e}"; return }
+        self.doc.dirty = false
+        self.status = "saved {self.path}"
+    }
+
+    # Arrow keys move visually: on a right-to-left line, ← goes forward.
+    fn horizontal(self, dir: int) {
+        let t = self.doc.text
+        let line = t.line_text_at(self.cursor)
+        let rtl = bidi.first_strong(line) == bidi.RTL
+        let fwd = (dir > 0) != rtl
+        self.cursor = if fwd { t.next_grapheme(self.cursor) } else { t.prev_grapheme(self.cursor) }
+    }
+
+    fn on_key(self, k: key.Key) -> bool {               # false → quit
+        if self.search != nil { self.on_search_key(k); return true }
+        let t = self.doc.text
+        if k != key.Ctrl('q') { self.quit_armed = false }
+        match k {
+            key.Ctrl('q') => {
+                if !self.doc.dirty or self.quit_armed { return false }
+                self.quit_armed = true
+                self.status = "unsaved changes — C-q again to quit, C-s to save"
+            }
+            key.Ctrl('s')         => self.save()
+            key.Ctrl('z')         => self.undo_redo(self.doc.undo())
+            key.Ctrl('y')         => self.undo_redo(self.doc.redo())
+            key.Ctrl('f')         => {
+                self.pre_search = self.cursor
+                # Persian folding: ي≡ی, ك≡ک, ZWNJ and kashida ignored while matching
+                self.search = text_search.Incremental.new(t, from: self.cursor, smart_case: true,
+                                                          fold: persian_script.search_fold)
+            }
+            key.Left              => self.horizontal(-1)
+            key.Right             => self.horizontal(1)
+            key.Up                => self.cursor = t.vertical_move(self.cursor, -1)
+            key.Down              => self.cursor = t.vertical_move(self.cursor, 1)
+            key.Home              => self.cursor = t.line_start(self.cursor)
+            key.End               => self.cursor = t.line_end(self.cursor)
+            key.Ctrl(key.Left)    => self.cursor = word_motion.prev_start(t, self.cursor, WORD_RULES)
+            key.Ctrl(key.Right)   => self.cursor = word_motion.next_start(t, self.cursor, WORD_RULES)
+            key.Backspace         => if self.cursor > 0 { self.delete_range(t.prev_grapheme(self.cursor), self.cursor) }
+            key.Delete            => if self.cursor < t.len() { self.delete_range(self.cursor, t.next_grapheme(self.cursor)) }
+            key.Ctrl(key.Backspace) => self.delete_range(word_motion.prev_start(t, self.cursor, WORD_RULES), self.cursor)
+            key.Enter             => self.type_text("\n" + t.indent_of_line(self.cursor))
+            key.Tab               => self.type_text("    ")
+            key.Paste(s)          => self.type_text(persian_script.normalize(s))   # Arabic ي/ك → Persian ی/ک
+            key.Char(c)           => self.type_text(persian_script.normalize("{c}"))
+            _                     => {}
+        }
+        return true
+    }
+
+    fn on_search_key(self, k: key.Key) {
+        let s = self.search!
+        match k {
+            key.Escape    => { self.cursor = self.pre_search; self.search = nil }
+            key.Enter     => self.search = nil
+            key.Ctrl('f') => s.next()
+            key.Ctrl('r') => s.prev()
+            key.Backspace => s.pop_char()
+            key.Char(c)   => s.push_char(c)
+            _             => {}
+        }
+        if let m = self.search?.current() { self.cursor = m.start }
+    }
+
+    # ── drawing ────────────────────────────────────────────────────────
+    fn draw(self, f: tui.Frame) {
+        let (body, bar)      = f.area().split_bottom(1)
+        let (gutter, area)   = body.split_left(5)
+        let t                = self.doc.text
+        let (cur_line, _)    = t.line_col(self.cursor)
+        self.top = clamp(self.top, cur_line - area.h + 1, cur_line)       # keep the caret on screen
+
+        let peer_at = self.peers.values()
+            .filter_map(fn(p) => p.cursor.and_then(fn(id) => self.doc.seq.index_of(id)).map(fn(i) => (i, p)))
+            .to_map()
+        let hits = self.search?.visible_matches(t.line_start_index(self.top), area.h) or []
+        var caret: (int, int)? = nil
+
+        for (row, ln) in t.lines(self.top, area.h).enumerate() {
+            let y = area.y + row
+            f.text(gutter.x, y, "{ln.no + 1:>4} ", self.th.style("gutter"))
+            let spans = self.hl.line(ln.no)
+            let base  = bidi.first_strong(ln.text) or bidi.LTR
+            let order = bidi.resolve(ln.text, paragraph: base).visual_to_logical()
+            var x = if base == bidi.RTL { area.right() - min(utf8.width(ln.text), area.w) } else { area.x }
+
+            for li in order {
+                let gi = ln.start + li                               # index into the whole text
+                let ch = ln.text.char_at(li)
+                var st = self.th.resolve(spans.scope_at(li))
+                if hits.any(fn(h) => h.contains(gi)) { st = st.bg(self.th.color("search.match")) }
+                if let p = peer_at[gi] { st = st.bg(p.tint).fg(color.black()) }
+                if gi == self.cursor { caret = (x, y) }
+                if x < area.right() { f.put(x, y, ch, st) }
+                x += utf8.width(ch)
+            }
+            if self.cursor == ln.start + ln.text.char_len() { caret = (x, y) }   # caret at end of line
+        }
+
+        # status bar: document · peers (in their colours) · position · message
+        let (l, c) = t.line_col(self.cursor)
+        var sx = bar.x
+        sx = f.text(sx, bar.y, " {self.doc.name}{if self.doc.dirty { " ●" } else { "" }} ", style.reverse())
+        for (_, p) in self.peers { sx = f.text(sx + 1, bar.y, " {p.name} ", style.bg(p.tint).fg(color.black())) }
+        let right = if let s = self.search { "/{s.query()}  {s.position()}/{s.count()} " } else { "{l + 1}:{c + 1} " }
+        f.text(sx + 2, bar.y, self.status, self.th.style("status.message"))
+        f.text(bar.right() - utf8.width(right), bar.y, right, style.reverse())
+
+        if let (cx, cy) = caret { f.set_cursor(cx, cy) }
+    }
+}
+
+# ── main ────────────────────────────────────────────────────────────────────
+
+fn main(args: [str]) -> int! {
+    let (join, path) = match args {
+        ["--join", p] => (true, p)
+        [p]           => (false, p)
+        _             => { io.eprint("usage: coedit [--join] FILE"); return 2 }
+    }
+    let cfg_text = io.read_text(io.join(env.config_dir(), "coedit.toml")) or ""
+    let cfg  = toml.decode<{str: toml.Value}>(cfg_text)?
+    let me   = crdt.SiteId.random()
+    let name = cfg.get("name")?.as_str() or env.user()
+
+    var doc = Doc {
+        name: io.basename(path), seq: crdt.Rga.new(me), text: piecetable.empty(),
+        hist: edit_history.new(limit: 1000), dirty: false,
+    }
+    if !join and io.exists(path) {
+        let content = io.read_text(path)?
+        doc.text = piecetable.from(content)          # file becomes the read-only original buffer
+        # Deterministic element ids derived from the content hash: two people
+        # who open the same file independently already agree on every character.
+        doc.seq.load_snapshot(content, origin: crdt.SiteId.derive("file:" + content.sha256()))
+    }
+
+    let net = datagram.multicast(GROUP, PORT, ttl: 1, loopback: false)?
+    let ed = Editor {
+        doc, me, my_name: name, path, cursor: 0, top: 0, peers: {}, net,
+        hl: syntax.for_path(path, grammar.registry()).attach(doc.text),
+        th: theme.load(cfg.get("theme")?.as_str() or "default")?,
+        search: nil, pre_search: 0, status: if join { "joining {doc.name}…" } else { "" }, quit_armed: false,
+    }
+
+    let ui = tui.App.new(fn(f) => ed.draw(f))
+    ui.on_key(fn(k) { if !ed.on_key(k) { ui.quit() } })
+    ui.watch(net, fn() {
+        while let (bytes, from) = net.try_recv() { ed.on_packet(bytes, from) }
+        ui.redraw()
+    })
+    ui.every(2.0, fn() {
+        ed.hello()                                                    # heartbeat + anti-entropy
+        let gone = ed.peers.filter(fn(_, p) => sched.now() - p.last_seen > 10.0)
+        for (site, p) in gone { ed.peers.remove(site); ed.status = "{p.name} left" }
+        ui.redraw()
+    })
+    ed.hello()
+    log.to_file(io.join(env.state_dir(), "coedit.log"))
+    ui.run()?
+    return 0
+}

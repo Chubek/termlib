@@ -1,0 +1,11 @@
+use procfs, sysfs, env
+const root = env.get("TSC_FS_FIXTURE") or G:die("missing fixture")
+G:import("env")
+if env_m:get("TSC_FS_FIXTURE") != root { G:die("env companion binding") }
+const proc = procfs.open(root)
+if procfs.read(proc, "value", 5) != "value" { G:die("procfs read") }
+const sys = sysfs.open(root)
+if sysfs.read(sys, "value", 5) != "value" { G:die("sysfs read") }
+procfs.close(proc)
+sysfs.close(sys)
+print("filesystem views OK")

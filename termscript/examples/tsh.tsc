@@ -1,0 +1,516 @@
+# tsh.tms — an interactive shell with real job control
+#
+# Pipelines, && and ||, subshells, redirections, $VAR ${VAR} $? $! $$,
+# $(command substitution), globbing and ~; foreground/background jobs with
+# Ctrl-Z, `jobs`, `fg`, `bg`; context-aware fuzzy completion; live syntax
+# colouring (unknown commands turn red as you type); persistent history.
+#
+#   tsh                 interactive
+#   tsh script.tsh      run a file
+#   tsh -c 'cmd'        run one line
+
+use readline, autocomp, peg, exec, pipe, signal, termios, terminal, env, io, glob
+use prompt_string, procfs, style, color
+
+const GRAMMAR = peg.compile(r#"
+    line     <- _ list? _ comment? !.
+    list     <- and_or (_ sep _ and_or)* _ sep?
+    sep      <- ';' / '&' !'&' / '\n'
+    and_or   <- pipeline (_ andop _ pipeline)*
+    andop    <- '&&' / '||'
+    pipeline <- bang? _ command (_ '|' !'|' _ command)*
+    bang     <- '!'
+    command  <- subshell / simple
+    subshell <- '(' _ list _ ')' (_ redir)*
+    simple   <- (assign _)* word (_ (redir / word))*
+    assign   <- name '=' word?
+    redir    <- fd? rop _ word
+    rop      <- '>>' / '>&' / '<&' / '>' / '<'
+    word     <- (sq / dq / subst / var / bare)+
+    sq       <- "'" [^']* "'"
+    dq       <- '"' (subst / var / '\\' . / [^"$\\])* '"'
+    subst    <- '$(' _ list _ ')'
+    var      <- '$' ('{' name '}' / name / [?$!#0-9])
+    bare     <- ('\\' . / [^ \t\n;&|()<>'"$\\#])+
+    name     <- [A-Za-z_][A-Za-z0-9_]*
+    fd       <- [0-9]
+    comment  <- '#' [^\n]*
+    _        <- [ \t]*
+"#)
+
+# ── AST. Words stay as parse trees until execution, because $(…) and
+#    globbing must see the state of the world at the moment they run. ──────
+
+enum Node {
+    List(items: [(Node, bool)])               # bool: run in background (&)
+    AndOr(first: Node, rest: [(str, Node)])
+    Pipeline(negate: bool, cmds: [Node])
+    Simple(assigns: [(str, peg.Tree?)], words: [peg.Tree], redirs: [Redir])
+    Subshell(body: Node, redirs: [Redir])
+}
+
+struct Redir { fd: int, op: str, target: peg.Tree }
+
+fn build(t: peg.Tree) -> Node {
+    return match t.rule {
+        "line"     => if let l = t.child("list") { build(l) } else { Node.List([]) }
+        "list"     => {
+            let seps = t.children("sep")
+            Node.List(t.children("and_or").enumerate().map(fn((i, a)) => (build(a), seps.get(i)?.text == "&")))
+        }
+        "and_or"   => {
+            let ps = t.children("pipeline").map(build)
+            Node.AndOr(ps[0], t.children("andop").map(fn(o) => o.text).zip(ps[1..]))
+        }
+        "pipeline" => Node.Pipeline(t.has("bang"), t.children("command").map(build))
+        "command"  => build(t.first())
+        "subshell" => Node.Subshell(build(t.child("list")!), t.children("redir").map(redir))
+        "simple"   => Node.Simple(
+                          t.children("assign").map(fn(a) => (a.child("name")!.text, a.child("word"))),
+                          t.children("word"),
+                          t.children("redir").map(redir))
+        other      => panic("unexpected rule {other}")
+    }
+}
+
+fn redir(t: peg.Tree) -> Redir {
+    let op = t.child("rop")!.text
+    let fd = t.child("fd")?.text.to_int() or (if op.starts_with("<") { 0 } else { 1 })
+    return Redir { fd, op, target: t.child("word")! }
+}
+
+# ── jobs ────────────────────────────────────────────────────────────────────
+
+enum JobState { Running, Stopped, Done(code: int) }
+
+struct Job {
+    id:     int
+    pgid:   int
+    procs:  [exec.Process]
+    text:   str
+    state:  JobState
+    tmodes: termios.Attrs?        # terminal modes when it stopped (vim, less…), restored on fg
+}
+
+struct Shell {
+    tty:         terminal.Tty?
+    shell_pgid:  int
+    shell_modes: termios.Attrs?
+    jobs:        [Job]
+    next_job:    int
+    last_status: int
+    last_bg:     int
+    interactive: bool
+    rl:          readline.Editor?
+}
+
+impl Shell {
+    fn batch() -> Shell => Shell {
+        tty: nil, shell_pgid: exec.getpgrp(), shell_modes: nil, jobs: [], next_job: 1,
+        last_status: 0, last_bg: 0, interactive: false, rl: nil,
+    }
+
+    fn interactive() -> Shell! {
+        let tty = terminal.open_controlling()?
+        # If we were started in the background, wait until we're put in the foreground.
+        while termios.foreground(tty)? != exec.getpgrp() { exec.kill_group(exec.getpgrp(), signal.TTIN)? }
+        signal.ignore([signal.INT, signal.QUIT, signal.TSTP, signal.TTIN, signal.TTOU])
+        exec.setpgid(0, 0) or {}                   # become our own process-group leader
+        termios.set_foreground(tty, exec.getpid())?
+        var sh = Shell.batch()
+        sh.tty, sh.shell_pgid, sh.shell_modes, sh.interactive = tty, exec.getpid(), termios.get(tty)?, true
+        return sh
+    }
+
+    # ── expansion: tilde → parameters → $(…) → field splitting → globbing.
+    #    Quoted text is glob-escaped so `"*.c"` stays literal. ────────────
+    fn expand(self, w: peg.Tree) -> [str]! {
+        var fields = [""]
+        var globbable = false
+        for part in w.children() {
+            match part.rule {
+                "bare" => {
+                    var s = part.text.unescape_backslashes()
+                    if fields == [""] and s.starts_with("~") { s = env.home() + s[1..] }
+                    globbable = globbable or s.contains_any("*?[")
+                    fields[-1] += s
+                }
+                "sq"    => fields[-1] += glob.escape(part.text[1..-1])
+                "dq"    => fields[-1] += glob.escape(self.expand_dq(part)?)       # no split, no glob
+                "var"   => split_into(fields, glob.escape(self.lookup(part.text)))
+                "subst" => split_into(fields, glob.escape(self.capture(build(part.child("list")!))?.trim_end("\n")))
+            }
+        }
+        if !globbable { return fields.map(glob.unescape) }
+        return fields.flat_map(fn(f) {
+            let hits = glob.expand(f, dotfiles: false)
+            if hits.is_empty() { [glob.unescape(f)] } else { hits.sorted() }   # no match: keep the word
+        })
+    }
+
+    fn expand_dq(self, t: peg.Tree) -> str! {
+        var out = ""
+        for p in t.children() {
+            out += match p.rule {
+                "var"   => self.lookup(p.text)
+                "subst" => self.capture(build(p.child("list")!))?.trim_end("\n")
+                _       => p.text.unescape_backslashes()
+            }
+        }
+        return out
+    }
+
+    fn lookup(self, v: str) -> str {
+        let name = v.trim_start("$").trim("{}")
+        return match name {
+            "?" => "{self.last_status}"
+            "$" => "{exec.getpid()}"
+            "!" => "{self.last_bg}"
+            _   => env.get(name) or ""
+        }
+    }
+
+    fn capture(self, n: Node) -> str! {
+        let (r, w) = pipe.open()?
+        let p = exec.fork(fn() {
+            w.dup_to(1)
+            r.close()
+            var sub = Shell.batch()
+            exec.exit(sub.run(n) or 1)
+        })?
+        w.close()
+        let out = r.read_all_text()?
+        p.wait()?
+        return out
+    }
+
+    fn resolve(self, name: str) -> str? {
+        if name.contains("/") { return if io.is_executable(name) { name } else { nil } }
+        for d in (env.get("PATH") or "").split(":") {
+            let p = io.join(d, name)
+            if io.is_executable(p) { return p }
+        }
+        return nil
+    }
+
+    # ── execution ───────────────────────────────────────────────────────
+    fn run(self, n: Node) -> int! {
+        match n {
+            Node.List(items) => for (cmd, bg) in items {
+                self.last_status = if bg { self.launch_bg(cmd)? } else { self.run(cmd)? }
+            }
+            Node.AndOr(first, rest) => {
+                self.last_status = self.run(first)?
+                for (op, p) in rest {
+                    if (op == "&&") == (self.last_status == 0) { self.last_status = self.run(p)? }
+                }
+            }
+            Node.Pipeline(neg, cmds) => {
+                let s = self.run_pipeline(cmds, bg: false)?
+                self.last_status = if neg { if s == 0 { 1 } else { 0 } } else { s }
+            }
+            _ => self.last_status = self.run_pipeline([n], bg: false)?
+        }
+        return self.last_status
+    }
+
+    fn launch_bg(self, n: Node) -> int! {
+        # `a && b &` runs the whole and-or list in a background subshell, like bash.
+        let cmds = if let Node.Pipeline(_, cs) = n { cs } else { [Node.Subshell(n, [])] }
+        return self.run_pipeline(cmds, bg: true)
+    }
+
+    fn run_pipeline(self, cmds: [Node], bg: bool) -> int! {
+        # Builtins that change shell state (cd, export, fg…) must run in this process.
+        if !bg and cmds.len() == 1 and cmds[0] is Node.Simple {
+            let argv = self.expand_all(cmds[0].words)?
+            if let b = BUILTINS[argv.get(0) or ""] {
+                return self.with_redirs(cmds[0].redirs, fn() => b(self, argv))
+            }
+        }
+
+        var job = Job { id: self.next_job, pgid: 0, procs: [], text: cmds.map(fn(c) => c.source()).join(" | "),
+                        state: JobState.Running, tmodes: nil }
+        var prev: io.Fd? = nil
+        for (i, c) in cmds.enumerate() {
+            let last = i == cmds.len() - 1
+            let (r, w) = if last { (nil, nil) } else { pipe.open()? }
+            let pgid = job.pgid
+            let p = exec.fork(fn() {
+                exec.setpgid(0, pgid)            # pgid 0: the first child becomes the leader
+                if !bg and self.interactive { termios.set_foreground(self.tty!, exec.getpgrp()) or {} }
+                signal.reset_defaults([signal.INT, signal.QUIT, signal.TSTP, signal.TTIN, signal.TTOU, signal.CHLD])
+                if let fd = prev { fd.dup_to(0) }
+                if let fd = w { fd.dup_to(1); r!.close() }
+                exec.exit(self.exec_stage(c))
+            })?
+            if job.pgid == 0 { job.pgid = p.pid }
+            exec.setpgid(p.pid, job.pgid) or {}  # parent does it too, to win the race with exec
+            job.procs.push(p)
+            prev?.close()
+            w?.close()
+            prev = r
+        }
+        self.next_job += 1
+
+        if bg {
+            self.last_bg = job.procs[-1].pid
+            self.jobs.push(job)
+            if self.interactive { io.eprint("[{job.id}] {job.pgid}") }
+            return 0
+        }
+        return self.foreground(job, cont: false)
+    }
+
+    # Runs in the forked child; returns only on failure.
+    fn exec_stage(self, n: Node) -> int {
+        self.interactive = false
+        match n {
+            Node.Subshell(body, redirs) => {
+                self.apply_redirs(redirs) catch e { io.eprint("tsh: {e}"); return 1 }
+                return self.run(body) or 1
+            }
+            Node.Simple(assigns, words, redirs) => {
+                let argv = self.expand_all(words) catch e { io.eprint("tsh: {e}"); return 1 }
+                for (k, v) in assigns {
+                    env.set(k, if let w = v { self.expand(w).map(fn(f) => f.join(" ")) or "" } else { "" }, exported: true)
+                }
+                self.apply_redirs(redirs) catch e { io.eprint("tsh: {e}"); return 1 }
+                if let b = BUILTINS[argv[0]] { return b(self, argv) }
+                let path = self.resolve(argv[0]) or { io.eprint("tsh: {argv[0]}: command not found"); return 127 }
+                exec.replace(path, argv)                         # execve; returns only on error
+                io.eprint("tsh: {argv[0]}: {exec.last_error()}")
+                return 126
+            }
+            _ => return 2
+        }
+    }
+
+    fn foreground(self, job: Job, cont: bool) -> int! {
+        if self.interactive {
+            termios.set_foreground(self.tty!, job.pgid)?
+            if cont and job.tmodes != nil { termios.set(self.tty!, job.tmodes!)? }
+        }
+        if cont { exec.kill_group(job.pgid, signal.CONT)? }
+        job.state = JobState.Running
+
+        let st = exec.wait_group(job.pgid, untraced: true)?   # until all exit or one stops
+
+        if self.interactive {
+            termios.set_foreground(self.tty!, self.shell_pgid)?
+            job.tmodes = termios.get(self.tty!)?
+            termios.set(self.tty!, self.shell_modes!)?         # a crashed vim can't leave us in raw mode
+        }
+        if st.stopped {
+            job.state = JobState.Stopped
+            if !self.jobs.contains(job) { self.jobs.push(job) }
+            io.eprint("\n[{job.id}]+  Stopped    {job.text}")
+            return 128 + st.signal
+        }
+        self.jobs.remove_value(job)
+        if st.last.signaled and st.last.signal != signal.INT { io.eprint(signal.describe(st.last.signal)) }
+        return st.last.code_or_128_plus_signal()
+    }
+
+    fn reap_background(self) {
+        for st in exec.reap(untraced: true) {               # waitpid(-1, WNOHANG | WUNTRACED)
+            let j = self.jobs.find(fn(j) => j.procs.any(fn(p) => p.pid == st.pid)) or continue
+            j.procs.record(st)
+            if j.procs.all_exited() { j.state = JobState.Done(st.code_or_128_plus_signal()) }
+            else if st.stopped { j.state = JobState.Stopped }
+        }
+        for j in self.jobs {
+            if let JobState.Done(code) = j.state { io.eprint("[{j.id}]  Done({code})    {j.text}") }
+        }
+        self.jobs.retain(fn(j) => !(j.state is JobState.Done))
+    }
+
+    fn expand_all(self, words: [peg.Tree]) -> [str]! => words.flat_map(fn(w) => self.expand(w)?)
+
+    fn apply_redirs(self, rs: [Redir]) -> void! {
+        for r in rs {
+            let target = self.expand(r.target)?.join(" ")
+            match r.op {
+                ">"  => io.open(target, io.WRITE | io.CREATE | io.TRUNCATE)?.dup_to(r.fd)
+                ">>" => io.open(target, io.WRITE | io.CREATE | io.APPEND)?.dup_to(r.fd)
+                "<"  => io.open(target, io.READ)?.dup_to(r.fd)
+                ">&" | "<&" => io.Fd(target.to_int() or return error("bad fd '{target}'")).dup_to(r.fd)
+            }
+        }
+    }
+
+    fn with_redirs(self, rs: [Redir], body: fn() -> int) -> int! {
+        if rs.is_empty() { return body() }
+        let saved = rs.map(fn(r) => (r.fd, io.Fd(r.fd).dup()?))
+        defer for (fd, copy) in saved { copy.dup_to(fd); copy.close() }
+        self.apply_redirs(rs)?
+        return body()
+    }
+
+    fn job_arg(self, a: [str]) -> Job? {
+        if self.jobs.is_empty() { io.eprint("{a[0]}: no current job"); return nil }
+        let want = a.get(1)?.trim_start("%").to_int()
+        return if let id = want { self.jobs.find(fn(j) => j.id == id) } else { self.jobs[-1] }
+    }
+}
+
+fn split_into(fields: [str], s: str) {
+    let ifs = env.get("IFS") or " \t\n"
+    let parts = s.split_any(ifs)
+    if parts.is_empty() { return }
+    fields[-1] += parts[0]
+    for p in parts[1..] { fields.push(p) }
+}
+
+const BUILTINS: {str: fn(Shell, [str]) -> int} = {
+    "cd": fn(sh, a) {
+        let target = match a.get(1) { nil => env.home(), "-" => env.get("OLDPWD") or ".", d => d }
+        io.chdir(target) catch e { io.eprint("cd: {target}: {e}"); return 1 }
+        env.set("OLDPWD", env.get("PWD") or "", exported: true)
+        env.set("PWD", io.cwd(), exported: true)
+        0
+    },
+    "exit":   fn(sh, a) { exec.exit(a.get(1)?.to_int() or sh.last_status) },
+    "export": fn(sh, a) {
+        for kv in a[1..] {
+            let (k, v) = kv.split_once("=") or (kv, env.get(kv) or "")
+            env.set(k, v, exported: true)
+        }
+        0
+    },
+    "jobs": fn(sh, a) {
+        sh.reap_background()
+        for j in sh.jobs { print("[{j.id}]  {j.state:<10} {j.text}") }
+        0
+    },
+    "fg": fn(sh, a) {
+        let j = sh.job_arg(a) or return 1
+        print(j.text)
+        sh.foreground(j, cont: true) or 1
+    },
+    "bg": fn(sh, a) {
+        let j = sh.job_arg(a) or return 1
+        j.state = JobState.Running
+        exec.kill_group(j.pgid, signal.CONT) or {}
+        print("[{j.id}]+ {j.text} &")
+        0
+    },
+    "history": fn(sh, a) {
+        for (i, line) in (sh.rl?.history() or []).enumerate() { print("{i + 1:>5}  {line}") }
+        0
+    },
+}
+
+# ── interactive niceties ────────────────────────────────────────────────────
+
+fn completer(sh: Shell) -> autocomp.Engine {
+    var cached_path = ""
+    var commands: [str] = []
+    fn all_commands() -> [str] {
+        let p = env.get("PATH") or ""
+        if p != cached_path {                        # rescan only when PATH changes
+            cached_path = p
+            commands = p.split(":")
+                .flat_map(fn(d) => glob.expand(io.join(d, "*")).filter(io.is_executable).map(io.basename))
+                .chain(BUILTINS.keys()).unique().sorted()
+        }
+        return commands
+    }
+
+    let e = autocomp.Engine.new(matcher: autocomp.fuzzy(case_insensitive: true))
+    e.when(autocomp.FirstWord, fn(_) => all_commands())
+    e.when(autocomp.Prefix("$"), fn(_) => env.names().map(fn(n) => "$" + n))
+    e.when(autocomp.After(["fg", "bg"]), fn(_) => sh.jobs.map(fn(j) => autocomp.Item("%{j.id}", note: j.text)))
+    e.when(autocomp.After(["kill"]), fn(_) =>
+        procfs.processes().filter(fn(p) => p.uid == env.uid()).map(fn(p) => autocomp.Item("{p.pid}", note: p.comm)))
+    e.when(autocomp.After(["cd", "pushd"]), fn(prefix) => glob.expand(prefix + "*/", tilde: true))
+    e.otherwise(fn(prefix) =>
+        glob.expand(prefix + "*", tilde: true).map(fn(p) => if io.is_dir(p) { p + "/" } else { p }))
+    return e
+}
+
+fn highlighter(sh: Shell) -> fn(str) -> [readline.Span] {
+    let good = style.fg(color.ansi(2))
+    let bad  = style.fg(color.ansi(1)).underline()
+    let strs = style.fg(color.ansi(3))
+    let vars = style.fg(color.ansi(6))
+    let ops  = style.fg(color.ansi(5)).bold()
+    return fn(line) {
+        var spans = []
+        GRAMMAR.parse_partial(line).walk(fn(n) {       # best effort on an unfinished line
+            match n.rule {
+                "simple" => if let w = n.child("word") {
+                    let known = BUILTINS.has(w.text) or sh.resolve(w.text) != nil
+                    spans.push(readline.Span(w.range, if known { good } else { bad }))
+                }
+                "sq" | "dq"                    => spans.push(readline.Span(n.range, strs))
+                "var" | "subst"                => spans.push(readline.Span(n.range, vars))
+                "andop" | "sep" | "rop" | "bang" => spans.push(readline.Span(n.range, ops))
+                _ => {}
+            }
+        })
+        return spans
+    }
+}
+
+fn git_branch() -> str? {
+    var d = io.cwd()
+    loop {
+        let head = io.join(d, ".git", "HEAD")
+        if io.exists(head) {
+            let h = io.read_text(head) or return nil
+            return if h.starts_with("ref: refs/heads/") { h[16..].trim() } else { h[..7] }
+        }
+        if d == "/" { return nil }
+        d = io.dirname(d)
+    }
+}
+
+fn prompt(sh: Shell) -> str {
+    # \u \h \w \$ are bash-style; {git} {jobs} {status} are ours.
+    let ps1 = env.get("PS1") or r"\[\e[1;32m\]\u@\h\[\e[0m\] \[\e[1;34m\]\w\[\e[0m\]{git}{jobs}{status} \$ "
+    let branch = git_branch()
+    return prompt_string.expand(ps1, {
+        "git":    if let b = branch { " \e[35m({b})\e[0m" } else { "" },
+        "jobs":   if sh.jobs.is_empty() { "" } else { " \e[33m[{sh.jobs.len()}]\e[0m" },
+        "status": if sh.last_status == 0 { "" } else { " \e[31m{sh.last_status}\e[0m" },
+    })
+}
+
+fn main(args: [str]) -> int! {
+    if !args.is_empty() {
+        let src = if args[0] == "-c" { args[1] } else { io.read_text(args[0])? }
+        var sh = Shell.batch()
+        return sh.run(build(GRAMMAR.parse(src)?))?
+    }
+
+    var sh = Shell.interactive()?
+    let rl = readline.Editor.new(sh.tty!, history: io.join(env.home(), ".tsh_history"), max_history: 50_000)
+    rl.completer    = completer(sh)
+    rl.highlighter  = highlighter(sh)
+    rl.continuation = fn(buf) => GRAMMAR.parse(buf).is_incomplete()   # open quote/paren: keep reading
+    sh.rl = rl
+
+    var warned_stopped = false
+    loop {
+        sh.reap_background()
+        let line = rl.read(prompt(sh)) catch readline.Interrupted { continue } catch readline.Eof {
+            if !warned_stopped and sh.jobs.any(fn(j) => j.state is JobState.Stopped) {
+                io.eprint("tsh: there are stopped jobs")
+                warned_stopped = true
+                continue
+            }
+            break
+        }
+        warned_stopped = false
+        if line.trim().is_empty() { continue }
+        let tree = GRAMMAR.parse(line) catch e {
+            io.eprint("tsh: syntax error at column {e.column}: {e.message}")
+            sh.last_status = 2
+            continue
+        }
+        sh.run(build(tree)) catch e { io.eprint("tsh: {e}"); sh.last_status = 1 }
+    }
+    for j in sh.jobs { exec.kill_group(j.pgid, signal.HUP) or {} }
+    return sh.last_status
+}

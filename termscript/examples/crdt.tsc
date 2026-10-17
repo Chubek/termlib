@@ -1,0 +1,23 @@
+# Runnable: original native RGA; no network or external CRDT dependency.
+use crdt
+
+const alice = crdt.new(1)
+const seed = crdt.insert(alice, 0, "Hello!")
+const bob = crdt.fork(alice, 2)
+
+const a = crdt.insert(alice, 5, " Alice")
+const b = crdt.insert(bob, 5, " Bob")
+crdt.apply(alice, b)
+crdt.apply(bob, a)
+if crdt.snapshot(alice) != crdt.snapshot(bob) { G:die("diverged") }
+print(crdt.text(alice))
+
+# A third replica receives a child before its predecessor.
+const carol = crdt.new(3)
+crdt.apply(carol, b)
+crdt.apply(carol, a)
+crdt.apply(carol, seed)
+if crdt.snapshot(carol) != crdt.snapshot(alice) { G:die("replay diverged") }
+
+const recovered = crdt.restore(4, crdt.snapshot(carol))
+print(crdt.text(recovered))

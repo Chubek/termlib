@@ -1,0 +1,35 @@
+use crdt
+G:import("crdt")
+const a = crdt.new(1)
+const seed = crdt.insert(a, 0, "ab")
+const b = crdt.fork(a, 2)
+const left = crdt.insert(a, 1, "XY")
+const right = crdt.insert(b, 1, "pq")
+crdt.apply(a, right)
+crdt.apply(a, right)
+crdt.apply(b, left)
+if crdt.text(a) != "apqXYb" { G:die("concurrent text order") }
+if crdt.snapshot(a) != crdt.snapshot(b) { G:die("replicas diverged") }
+const anchor = crdt.id_at(a, 0)
+if crdt.index_of(a, anchor) != 0 { G:die("stable ID") }
+const removed = crdt.delete(a, 0, 1)
+const fresh = crdt.new(3)
+crdt.apply(fresh, removed)
+crdt.apply(fresh, right)
+if crdt.len(fresh) != 0 { G:die("unresolved child visible") }
+crdt.apply(fresh, seed)
+crdt.apply(fresh, left)
+crdt.merge(b, a)
+if crdt.snapshot(fresh) != crdt.snapshot(a) { G:die("out of order delivery") }
+if crdt.snapshot(b) != crdt.snapshot(a) { G:die("merge convergence") }
+const recovered = crdt.restore(4, crdt.snapshot(a))
+if crdt.text(recovered) != "pqXYb" { G:die("snapshot restore") }
+const added = crdt.insert(recovered, 0, "می‌")
+if crdt.len(recovered) != 8 { G:die("Unicode scalar count") }
+if crdt_m:len(recovered) != 8 { G:die("companion binding") }
+crdt.close(a)
+crdt.close(a)
+crdt.close(b)
+crdt.close(fresh)
+crdt.close(recovered)
+print("CRDT convergence OK")

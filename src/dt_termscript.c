@@ -866,6 +866,19 @@ dt_termscript_run_backend (DT_TermVM *vm, const char *source,
  * the VM scope, modules resolve through the registry, the step budget
  * is shared, and error offsets carry Termscript line numbers. */
 
+/* Private backend bridge: functions execute through the standalone value ABI. */
+DT_Status
+dt_rt_function (DT_TermVM *vm, const char *name, TS_Func callback, DT_Error *error)
+{
+  TS_Error detail;
+  ts_error_clear (&detail);
+  TS_Status st = ts_rt_function (vm ? vm->tsvm : NULL, name, callback, &detail);
+  if (st != TS_OK)
+    dt_error_set (error, (DT_Status)st, detail.system_errno, detail.offset,
+                  "%s", detail.message);
+  return (DT_Status)st;
+}
+
 DT_Status
 dt_rt_call (DT_TermVM *vm, const DT_TermValue *mod, const char *modname,
             const char *func, const DT_TermValue *argv, size_t argc,

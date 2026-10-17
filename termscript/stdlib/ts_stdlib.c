@@ -76,6 +76,16 @@ static const TS_Module *const stdlib_modules[] = {
   &ts_std_word_motion_module,
   &ts_std_x11_module,
   &ts_std_yaml_module,
+  &ts_std_gapbuffer_module,
+  &ts_std_piecetable_module,
+  &ts_std_memory_module,
+  &ts_std_persian_script_module,
+  &ts_std_set_module,
+  &ts_std_stdio_module,
+  &ts_std_datagram_module,
+  &ts_std_procfs_module,
+  &ts_std_sysfs_module,
+  &ts_std_crdt_module,
 };
 
 _Static_assert (sizeof stdlib_modules / sizeof stdlib_modules[0] == TS_STDLIB_NMODULES,

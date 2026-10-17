@@ -1,5 +1,12 @@
 # Termscript Manual
 
+**Restructuring note:** the example-style core, current backend boundary and
+remaining unimplemented application features are documented in
+[`termscript/IMPLEMENTATION.md`](../termscript/IMPLEMENTATION.md). The older
+language reference below remains useful for section syntax and native modules;
+its statements that functions, infix expressions or script arguments are absent
+have been superseded by that status document.
+
 This manual describes the shipped Termscript 0.2 language, command-line driver,
 standard library, and native module ABI version 1. The implementation references
 are [`Termscript.ng`](../termscript/Termscript.ng),
@@ -43,6 +50,12 @@ NovoParse generator/runtime. The full stdlib also requires a C++20 compiler,
 vendored parsing/shell libraries, and the pkg-config packages `libutf8proc`,
 `fribidi`, `fontconfig`, `freetype2`, and `harfbuzz`. Xlib is detected optionally.
 The project compiles the bundled libdrm core on enabled Linux builds.
+
+The original native text CRDT is also available independently as
+`libtermscript_crdt.a`, without these dependencies. Its C API, Termscript
+`std.crdt` bindings, replica-identity rules, versioned snapshot format and
+security limitations are documented in
+[`stdlib/crdt/README.md`](../termscript/stdlib/crdt/README.md).
 
 | CMake option | Purpose |
 |---|---|
