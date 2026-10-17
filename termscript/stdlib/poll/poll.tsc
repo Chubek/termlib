@@ -1,1 +1,0 @@
-const poll_m = G:load("std.poll") or G:die("std.poll unavailable");

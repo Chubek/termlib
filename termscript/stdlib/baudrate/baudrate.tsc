@@ -1,1 +1,0 @@
-const baudrate_m = G:load("std.baudrate") or G:die("std.baudrate missing");

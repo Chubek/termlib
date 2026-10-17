@@ -1,2 +1,0 @@
-# Lexbor stylesheet parsing, cascading and conversion to terminal attributes.
-const css_m = G:load("std.css") or G:die("std.css missing");

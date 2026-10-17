@@ -1,3 +1,0 @@
-# toml.tsc -- Termscript companion for std.toml (vendored tomlc99).
-const toml_m = G:load("std.toml") or G:die("std.toml missing");
-const toml_empty = toml_m:parse("");

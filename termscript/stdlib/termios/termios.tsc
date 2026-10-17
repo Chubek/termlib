@@ -1,2 +1,0 @@
-# raw/set_flag/set_cc edit snapshots; apply installs them. Final release restores.
-const termios_m = G:load("std.termios") or G:die("std.termios missing");

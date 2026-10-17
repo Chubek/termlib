@@ -1,2 +1,0 @@
-# shell.tsc -- Termscript companion for std.shell.
-const shell_m = G:load("std.shell") or G:die("std.shell missing");

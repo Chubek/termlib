@@ -1,1 +1,0 @@
-const buffer_m = G:load("std.buffer") or G:die("std.buffer missing");

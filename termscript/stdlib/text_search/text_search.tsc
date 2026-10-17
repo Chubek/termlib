@@ -1,1 +1,0 @@
-const text_search_m = G:load("std.text_search") or G:die("std.text_search missing");

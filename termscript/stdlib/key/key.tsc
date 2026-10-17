@@ -1,3 +1,0 @@
-# key.tsc -- Termscript companion for std.key.
-const key_m = G:load("std.key") or G:die("std.key missing");
-const key_up_seq = key_m:encode("up");

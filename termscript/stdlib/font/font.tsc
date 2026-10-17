@@ -1,2 +1,0 @@
-# Fontconfig discovery, FreeType coverage and HarfBuzz glyph shaping.
-const font_m = G:load("std.font") or G:die("std.font missing");

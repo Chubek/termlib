@@ -1,2 +1,0 @@
-# expect.tsc -- Termscript companion for std.expect.
-const expect_m = G:load("std.expect") or G:die("std.expect missing");

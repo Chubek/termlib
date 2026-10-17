@@ -1,1 +1,0 @@
-const layout_m = G:load("std.layout") or G:die("std.layout missing");

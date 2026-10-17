@@ -1,1 +1,0 @@
-const stylesheet_m = G:load("std.stylesheet") or G:die("std.stylesheet missing");
