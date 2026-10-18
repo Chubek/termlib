@@ -1,0 +1,2 @@
+# Nonblocking POSIX message queues; receive returns [text, priority].
+const mqueue_m = G:Import("std.mqueue");

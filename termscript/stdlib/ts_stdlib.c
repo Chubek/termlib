@@ -86,6 +86,18 @@ static const TS_Module *const stdlib_modules[] = {
   &ts_std_procfs_module,
   &ts_std_sysfs_module,
   &ts_std_crdt_module,
+  &ts_std_input_module,
+  &ts_std_font_shape_module,
+  &ts_std_shm_module,
+  &ts_std_mqueue_module,
+  &ts_std_grammar_module,
+  &ts_std_peg_module,
+  &ts_std_evdev_module,
+  &ts_std_uvdev_module,
+  &ts_std_wayland_module,
+  &ts_std_index_module,
+  &ts_std_multiplex_module,
+  &ts_std_protocols_module,
 };
 
 _Static_assert (sizeof stdlib_modules / sizeof stdlib_modules[0] == TS_STDLIB_NMODULES,

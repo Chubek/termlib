@@ -160,8 +160,8 @@ target_compile_definitions(termak PRIVATE
   TERMAK_BUILD_ENTRY="${CMAKE_CURRENT_SOURCE_DIR}/termscript/termak/Termakfile.rb"
   TERMAK_INSTALL_ENTRY="${CMAKE_INSTALL_FULL_DATADIR}/termscript/termak/Termakfile.rb")
 set_target_properties(termak PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-install(TARGETS termak RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY termscript/termak/ DESTINATION ${CMAKE_INSTALL_DATADIR}/termscript/termak
+install(TARGETS termak RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT termak)
+install(DIRECTORY termscript/termak/ DESTINATION ${CMAKE_INSTALL_DATADIR}/termscript/termak COMPONENT termak
   FILES_MATCHING PATTERN "*.rb")
 set(TS_NATIVE_DEFAULT OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
@@ -225,13 +225,15 @@ install(FILES termlib.h termlib.hpp
 install(FILES termscript/termscript.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript
 )
-install(DIRECTORY termscript/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript/include
-  PATTERN "Termscript.hpp" EXCLUDE)
+install(FILES termscript/include/Termscript.h termscript/include/Termscript.hpp
+  termscript/include/TSC-API.h termscript/include/TSC-Module.h
+  termscript/include/TSC-Backend.h termscript/include/TSC-Protocol.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript/include)
 install(FILES termscript/Termscript.ng
   DESTINATION ${CMAKE_INSTALL_DATADIR}/termlib
 )
 install(FILES termscript/IMPLEMENTATION.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
-install(FILES termscript/termak/README.md DESTINATION ${CMAKE_INSTALL_DOCDIR}/termak)
+install(FILES termscript/termak/README.md DESTINATION ${CMAKE_INSTALL_DOCDIR}/termak COMPONENT termak)
 
 # Project documentation and the 22-chapter manual.
 install(FILES README.md GUIDE.md INSTALL.md
@@ -256,7 +258,105 @@ if(BUILD_TESTING)
   add_executable(test_termscript_modern tests/test_termscript_modern.c)
   target_link_libraries(test_termscript_modern PRIVATE termscript_standalone)
   add_test(NAME termscript_modern COMMAND test_termscript_modern)
+  add_executable(test_termscript_cpp tests/test_termscript_cpp.cpp)
+  target_compile_features(test_termscript_cpp PRIVATE cxx_std_17)
+  target_link_libraries(test_termscript_cpp PRIVATE termscript_standalone)
+  add_test(NAME termscript_cpp COMMAND test_termscript_cpp)
   if(TARGET termscript_stdlib)
+    add_executable(test_termscript_infrastructure tests/test_termscript_infrastructure.c)
+    target_link_libraries(test_termscript_infrastructure PRIVATE termscript_stdlib)
+    add_test(NAME termscript_infrastructure COMMAND test_termscript_infrastructure)
+    set_tests_properties(termscript_infrastructure PROPERTIES TIMEOUT 20)
+    add_test(NAME termscript_infrastructure_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_infrastructure.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/infrastructure-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=infrastructure modules OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    set_tests_properties(termscript_infrastructure_backends PROPERTIES TIMEOUT 60)
+    add_test(NAME termscript_device_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_devices.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/device-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=device modules OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    set_tests_properties(termscript_device_backends PROPERTIES TIMEOUT 30)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+      add_executable(test_termscript_devices tests/test_termscript_devices.c)
+      target_link_libraries(test_termscript_devices PRIVATE termscript_stdlib)
+      target_link_options(test_termscript_devices PRIVATE -Wl,--wrap=ioctl -Wl,--wrap=write)
+      add_test(NAME termscript_devices COMMAND test_termscript_devices)
+      set_tests_properties(termscript_devices PROPERTIES TIMEOUT 10)
+    endif()
+    if(TERMSCRIPT_WAYLAND AND TARGET PkgConfig::TS_WAYLAND_SERVER)
+      add_executable(test_termscript_wayland tests/test_termscript_wayland.c)
+      target_link_libraries(test_termscript_wayland PRIVATE termscript_stdlib PkgConfig::TS_WAYLAND_SERVER)
+      add_test(NAME termscript_wayland COMMAND test_termscript_wayland)
+      set_tests_properties(termscript_wayland PROPERTIES TIMEOUT 10)
+    endif()
+    add_executable(test_termscript_wayland_unavailable
+      tests/test_termscript_wayland_unavailable.c termscript/stdlib/wayland/wayland.c)
+    target_link_libraries(test_termscript_wayland_unavailable PRIVATE termscript_stdlib)
+    add_test(NAME termscript_wayland_unavailable COMMAND test_termscript_wayland_unavailable)
+    add_executable(test_termscript_parsers tests/test_termscript_parsers.c)
+    target_compile_definitions(test_termscript_parsers PRIVATE
+      TS_TEST_SHELL_EXAMPLE="${CMAKE_CURRENT_SOURCE_DIR}/termscript/examples/tsh.tsc")
+    target_link_libraries(test_termscript_parsers PRIVATE termscript_stdlib)
+    add_test(NAME termscript_parsers COMMAND test_termscript_parsers)
+    set_tests_properties(termscript_parsers PROPERTIES TIMEOUT 30)
+    add_test(NAME termscript_parsers_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_parsers.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/parsers-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=parser modules OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    set_tests_properties(termscript_parsers_backends PROPERTIES TIMEOUT 30)
+    if(UNIX AND NOT APPLE AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+      add_executable(test_termscript_infrastructure_alloc tests/test_termscript_infrastructure_alloc.c)
+      target_link_libraries(test_termscript_infrastructure_alloc PRIVATE termscript_stdlib)
+      target_link_options(test_termscript_infrastructure_alloc PRIVATE
+        -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc
+        -Wl,--wrap=strdup -Wl,--wrap=free)
+      add_test(NAME termscript_infrastructure_alloc COMMAND test_termscript_infrastructure_alloc)
+      set_tests_properties(termscript_infrastructure_alloc PROPERTIES TIMEOUT 20)
+      add_executable(test_termscript_parser_alloc tests/test_termscript_parser_alloc.c)
+      target_link_libraries(test_termscript_parser_alloc PRIVATE termscript_stdlib)
+      target_link_options(test_termscript_parser_alloc PRIVATE
+        -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc
+        -Wl,--wrap=strdup -Wl,--wrap=free)
+      add_test(NAME termscript_parser_alloc COMMAND test_termscript_parser_alloc)
+      set_tests_properties(termscript_parser_alloc PROPERTIES TIMEOUT 30)
+    endif()
+    add_executable(test_termscript_posix_ipc tests/test_termscript_posix_ipc.c)
+    target_link_libraries(test_termscript_posix_ipc PRIVATE termscript_stdlib)
+    if(TS_HAVE_MQUEUE)
+      target_compile_definitions(test_termscript_posix_ipc PRIVATE TS_TEST_HAVE_MQUEUE=1)
+    endif()
+    add_test(NAME termscript_posix_ipc COMMAND test_termscript_posix_ipc)
+    set_tests_properties(termscript_posix_ipc PROPERTIES TIMEOUT 10)
+    # Compile the real no-mq_open path independently, even on Linux hosts.
+    add_executable(test_termscript_mqueue_unavailable
+      tests/test_termscript_mqueue_unavailable.c termscript/stdlib/mqueue/mqueue.c)
+    target_link_libraries(test_termscript_mqueue_unavailable PRIVATE termscript_stdlib)
+    add_test(NAME termscript_mqueue_unavailable COMMAND test_termscript_mqueue_unavailable)
+    add_executable(test_termscript_input tests/test_termscript_input.c)
+    target_compile_definitions(test_termscript_input PRIVATE
+      TS_TEST_FONT="${CMAKE_CURRENT_SOURCE_DIR}/third_party/harfbuzz/perf/fonts/Roboto-Regular.ttf")
+    target_link_libraries(test_termscript_input PRIVATE termscript_stdlib)
+    add_test(NAME termscript_input COMMAND test_termscript_input)
+    add_test(NAME termscript_input_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_input.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/input-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=input decoding OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    set_tests_properties(termscript_input termscript_input_backends PROPERTIES TIMEOUT 30)
+    set_tests_properties(termscript_input_backends PROPERTIES ENVIRONMENT
+      "TS_TEST_FONT=${CMAKE_CURRENT_SOURCE_DIR}/third_party/harfbuzz/perf/fonts/Roboto-Regular.ttf")
     add_executable(test_termscript_crdt tests/test_termscript_crdt.c)
     target_link_libraries(test_termscript_crdt PRIVATE termscript_stdlib)
     add_test(NAME termscript_crdt COMMAND test_termscript_crdt)

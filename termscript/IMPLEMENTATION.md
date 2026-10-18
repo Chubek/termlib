@@ -97,20 +97,21 @@ indexing/method protocols, optional/result propagation, defer, scheduling and
 substantial additional library APIs. Those are **not implemented**. Do not
 describe parsing a simple type annotation as a type checker.
 
-The registry currently contains 79 native modules. Ten newly implemented
-modules are documented in `stdlib/new-modules.md`; the preexisting modules keep
+The registry currently contains 91 native modules. Additional implemented
+modules are documented in `stdlib/new-modules.md`, `stdlib/parser-modules.md`
+and `stdlib/device-modules.md`, with infrastructure modules documented in
+`stdlib/infrastructure-modules.md`; the preexisting modules keep
 their documented smaller APIs, not the richer APIs imagined by the application
-examples. `stdlib/MANIFEST.yaml` lists unimplemented module directories.
-Empty per-module Termakfiles and the other empty `tools/*.c` programs remain
-unfinished rather than being replaced with successful no-ops. C++ convenience
-wrappers in `include/Termscript.hpp` remain unfinished.
+examples. `stdlib/MANIFEST.yaml` records the shipped module inventory.
+Every shipped module now has a functional Termakfile; unrelated empty
+`tools/*.c` programs remain unfinished rather than successful no-ops.
 
 The de-stubbing pass added bounded `procfs`/`sysfs` views, fixed the empty
 `env` companion, and added configure-time checks rejecting empty/missing source,
 header and companion files for shipped modules (including alias companions).
-Fresh installations omit the unfinished empty C++ convenience header. The nine
-remaining module directories in the manifest are not registered as fake native
-modules; their empty files remain an explicit backlog, not working APIs.
+Fresh installations include the tested C++ convenience and protocol framing
+headers. The previously empty index/multiplex/protocol modules are registered
+with real bounded implementations, not successful no-ops.
 
 `stdlib/crdt/rga.[ch]` now provides an original, independent C11 Unicode RGA
 library (`libtermscript_crdt.a`, also embedded in the stdlib archive). Its
@@ -194,3 +195,169 @@ conformance and the added threading test. Generated CRDT C passed `-std=c11 -Wal
 -fsyntax-only`; clang-tidy's diagnostic/static-analyzer checks reported no
 diagnostics. The CRDT Termakfile build, standalone staged installation,
 installed archive/header consumer, and runnable CRDT example were verified.
+
+## Implementation hardening pass
+
+`include/Termscript.hpp` now supplies C++17 `termscript::value`, move-only
+`termscript::vm`, `termscript::error`, and `check_syntax`. Values copy strings and
+retain native handle aliases. Moves/adoption/release transfer ownership without
+calling the C API's releasing constructors on the transferred payload. The VM
+wrapper copies borrowed compiler output, frees owned run output even on errors,
+rejects embedded NUL input, and diagnoses moved-from access. It does not silently
+register the stdlib. Native module tables/userdata still outlive registration.
+
+Runnable embedding example (link the same runtime dependencies as the C API):
+
+```cpp
+#include <termscript/include/Termscript.hpp>
+#include <iostream>
+int main() {
+  termscript::vm vm;
+  std::cout << vm.run("G:puts(42);");
+}
+```
+
+Four previously empty modules now have actual implementations and companions:
+`std.input` incrementally frames terminal events; `std.font_shape` reuses the
+existing HarfBuzz implementation/handles; `std.shm` maps bounded POSIX named
+shared memory; `std.mqueue` performs bounded, nonblocking POSIX message operations.
+Their ownership, error, persistence, thread-safety and security contracts are
+specified in `stdlib/new-modules.md`. SGR mouse decimal fields are now parsed
+with checked bounds, rather than overflowing `sscanf` conversions.
+
+Termak now validates all selected sources/install inputs before any build hook,
+rejects escaping source symlinks and DESTDIR prefix traversal, atomically
+publishes archives as well as objects/executables, and exposes explicitly pinned
+package retrieval through `--index FILE --cache DIR fetch NAME VERSION`.
+It is not a package dependency/version solver and does not extract archives.
+
+The previously empty `evdev`, `uvdev`, and `wayland` modules now implement the
+low-level APIs documented in `stdlib/device-modules.md`. The previously empty
+`TSC-Protocol.h`, `index`, `multiplex`, and `protocols` scaffolds now implement
+the bounded APIs documented in `stdlib/infrastructure-modules.md`; they do not
+claim language-level collection/interface protocols or secure transport.
+
+Validation of this pass: the native build succeeded and the full CTest suite
+passed 36/36 tests. The new C++ ownership, input/font-shaping and POSIX IPC tests
+also passed under ASan/UBSan (3/3). Input and shaping fixtures passed VM, compiled
+C, QBE and Jiterati conformance; shaping uses the vendored Roboto font, not host
+font discovery. Termak's 14 offline tests passed. Strict C11/C++17 warning checks,
+the no-message-queue compilation path, selected GNU formatting checks and
+`git diff --check` passed. A staged install, installed C++ header/runtime consumer
+and installed Termak archive build succeeded. Clang's analyzer found no lifetime
+or bounds defects in the four new adapters; it did emit two generic Annex K
+recommendations for the explicitly bounded input memcpy/memmove operations.
+Non-Linux runtime portability and online package downloads were not tested.
+The full companion sweep took 118 seconds, still close to its 120-second bound.
+
+## Parser module implementation
+
+`std.grammar` now builds native NovoParse descriptors through declared symbols
+and productions, uses the existing scannerless libglr runtime, rejects ambiguity
+unless `first` was explicitly requested, and copies selected syntax trees into
+owned DOM values. This is not a run-time `.ng` compiler, a packed-forest API, or
+the examples' language grammar registry. It exposes the bundled runtime's lack
+of hard internal resource budgets rather than pretending the VM budget limits it.
+
+`std.peg` implements actual PEG ordered choice, possessive repetition, predicates,
+byte classes and named captures. It has bounded compilation, rule/expression
+depth, input, evaluation steps, capture count and output text; it rejects left
+recursion and potentially empty repetition. Parse state is local, captures are
+rolled back on failed alternatives/lookahead, and returned DOM trees outlive
+grammar closure. It is bounded backtracking, not a packrat/linear-time claim.
+See `stdlib/parser-modules.md` for the exact APIs and unsupported features.
+
+Regression coverage includes the PEG grammar extracted from illustrative
+`tsh.tsc` (not the application), strict trailing-input behavior, malformed input,
+ambiguous GLR grammars, empty productions, source ownership, alias/double-close,
+recovery after failures, capture/step/nesting limits and a deterministic
+malformed-grammar corpus. The ELF allocation harness injects each failure along
+PEG compilation/result construction, GLR result copying and grammar-handle construction and checks
+complete cleanup; it does not intercept NovoParse shared-library allocations.
+
+## Device modules and Termak recipes
+
+`std.evdev` owns nonblocking Linux device/duplicated native-stream descriptors,
+retains split records across would-block, distinguishes EOF/truncation, and
+exposes bounded device-name/key capability/state queries. `std.uvdev` is an
+explicit Linux uinput-v5 virtual keyboard adapter, not an inferred libudev API;
+import never creates a device. `std.wayland` conditionally uses the platform
+Wayland client >= 1.23 for bounded registry discovery and prepared-read/poll
+integration, without pretending to implement windows or a compositor. It never
+silently consumes WAYLAND_SOCKET, and closes only its own descriptors/proxies.
+Tests use pipes, mocked uinput setup/writes, and a local Wayland server/socketpair;
+real hardware/desktop injection and non-Linux runtime behavior remain unverified.
+
+Termak now provides explicit trusted `cmake_project` integration, with declared
+artifacts, validated cache definitions, component/full installation and consistent
+prefix/DESTDIR handling. Its native builder retains its own atomic output and
+install-path policy; external CMake builds/installers follow CMake's semantics,
+not a promised sandbox or automatic dependency solver.
+
+All 91 native modules (including aliases) have real per-adapter CMake archive
+targets and Termakfiles; `common` adds a helper archive, and `gen`/`q` install real
+headers/generator inputs without fake binaries. The full stdlib manifest installs
+the runtime/dependency closure. Individual component installs require that base
+package; adapter archives are not self-contained plugins. CRDT's independent core
+recipe remains available alongside its VM adapter. Public headers and Termak itself
+also have functional manifests. The original 89 module/common archives were compiled; the
+Termak PEG recipe and a complete staged stdlib/runtime install were verified.
+
+Device/Termak-stage validation (before the infrastructure additions below):
+
+- Native build succeeded; `ctest --test-dir /tmp/opencode/termlib-native
+  --output-on-failure --parallel 4` passed 43/43 tests, including backend checks.
+- Nine focused C++/input/IPC/parser/device tests passed under ASan/UBSan.
+- `ruby tests/test_termak.rb` passed all 19 tests, including CMake artifact,
+  component installation, C++ dependent linking and invalid-path checks.
+- New adapter sources passed strict C11 warning checks; device/parser sources
+  passed the selected clang diagnostic/analyzer checks. Public parser/device
+  headers passed GNU clang-format checks; `git diff --check` passed.
+- Staged full and PEG-component installs succeeded. An installed pkg-config
+  consumer linked the PEG adapter archive and ran successfully. The installed
+  Termak launcher built a fixture archive; header/generator manifests installed
+  their declared files; the protocol header was still unimplemented at that stage.
+
+These results do not verify real input hardware, desktop injection, non-Linux
+runtime behavior, hostile native plugins, or hard internal GLR resource budgets.
+
+## Index, multiplexing and protocol framing
+
+The remaining three scaffolds are now shipped modules, with their C sources,
+public module headers, companions and Termakfiles under `stdlib/index`,
+`stdlib/multiplex` and `stdlib/protocols`. Full contracts and a runnable backend
+fixture are documented in `stdlib/infrastructure-modules.md`.
+
+- `std.index` is a bounded sorted NUL-free byte-key/int64 index with binary
+  lookup, transactional allocation failure and owned ordered prefix snapshots.
+  Empty misnamed `index/socket.*` scaffolds were replaced by `index/index.*`.
+- `std.multiplex` is a POSIX readiness set with borrowed fds, monotonic finite
+  deadlines, EINTR retry and optional pollable-fd cancellation. It preserves
+  std.poll's mask vocabulary but returns explicit TIMEOUT/CANCELLED statuses.
+- `TSC-Protocol.h` exposes an opaque incremental binary frame decoder and
+  allocation-free encoder from libtermscript_stdlib. The versioned big-endian
+  format bounds lengths and checks CRC over header/payload. Unknown nonzero
+  types are preserved; unsupported versions/flags and corrupt frames fail
+  explicitly. `std.protocols` uses strict hex strings to avoid NUL truncation at
+  the script boundary. Decoder failures require explicit reset where documented.
+
+Validation:
+
+- Native build and all 46 CTest tests passed, including VM/C/QBE/Jiterati
+  conformance, readiness/cancellation, every frame split/truncation, corruption,
+  limits, snapshot lifetime and deterministic allocation-failure cleanup.
+- The three infrastructure tests also passed under ASan/UBSan. The initial
+  sanitizer AOT link lacked sanitizer runtime flags; rerunning with an explicit
+  `CC` wrapper adding `-fsanitize=address,undefined` passed. No unrelated driver
+  configuration behavior was changed to hide that limitation.
+- Strict C11 warnings-as-errors and the selected clang diagnostic/analyzer checks
+  passed for new modules/tests. Public headers passed GNU clang-format checks.
+- All 19 Termak tests passed. Each new module's Termak component build and staged
+  install succeeded. A C++17 installed-header/archive/pkg-config consumer compiled
+  with warnings-as-errors and ran a binary-payload protocol roundtrip.
+
+These APIs do not implement language-level collection/interface protocols,
+persistent/full-text indexing, channel routing, or a secure session transport.
+CRC is not authentication; untrusted networks still require authenticated,
+encrypted transport plus application authorization and payload validation.
+Multiplexing requires POSIX; non-Linux runtime behavior remains unverified.

@@ -1,0 +1,5 @@
+# Build/install the real CLI launcher and its Ruby implementation.
+cmake_project :termak, source_dir: '../..', target: 'termak', artifact: 'bin/termak', kind: :executable,
+              component: 'termak', options: %w[-DBUILD_TESTING=OFF
+              -DDOMWEAVE_BUILD_TERMSCRIPT_STDLIB=OFF -DTERMSCRIPT_NATIVE=OFF
+              -DTERMSCRIPT_JITERATI=OFF]

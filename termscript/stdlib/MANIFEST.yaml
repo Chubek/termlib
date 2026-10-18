@@ -1,5 +1,5 @@
 schema: 1
-native_module_count: 79
+native_module_count: 91
 registry: ts_stdlib.c
 companion_layout: "<name>/<name>.tsc"
 new_modules:
@@ -13,21 +13,26 @@ new_modules:
   - procfs
   - sysfs
   - crdt
-unimplemented_modules:
-  - evdev
-  - font_shape
-  - grammar
   - input
-  - mqueue
-  - peg
+  - font_shape
   - shm
+  - mqueue
+  - grammar
+  - peg
+  - evdev
   - uvdev
   - wayland
+  - index
+  - multiplex
+  - protocols
+unimplemented_modules: []
+additional_unimplemented_directories: []
 aliases_implemented_elsewhere:
   font_discovery: font/font.c
   stylesheet: css/css.c
 infrastructure_directories: [common, gen, q]
 unused_legacy_directory: emulatotor
 notes:
-  - "Empty per-module Termakfiles remain unfinished."
+  - "Every shipped module has a Termakfile building a real adapter archive through the shared CMake configuration."
+  - "Protocol framing is a codec, not authentication, encryption or a connection/session service."
   - "Existing native APIs do not yet implement all application-example APIs."

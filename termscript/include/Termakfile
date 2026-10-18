@@ -1,0 +1,4 @@
+# Public C/C++ headers; protocol functions link from libtermscript_stdlib.
+%w[Termscript.h Termscript.hpp TSC-API.h TSC-Backend.h TSC-Module.h TSC-Protocol.h].each do |header|
+  install_file header, "include/termscript/include/#{header}"
+end

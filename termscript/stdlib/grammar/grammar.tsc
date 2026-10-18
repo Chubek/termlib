@@ -1,0 +1,2 @@
+# Descriptor builder; this is not a run-time .ng compiler or grammar registry.
+const grammar_m = G:Import("std.grammar");

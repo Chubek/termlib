@@ -1,0 +1,3 @@
+# Header-only generated containers; normal builds use the committed headers.
+install_file 'ts_valvec.h', 'include/termscript/stdlib/gen/ts_valvec.h'
+install_file 'ts_strvec.h', 'include/termscript/stdlib/gen/ts_strvec.h'

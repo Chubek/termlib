@@ -9,10 +9,13 @@ module Termak
     end
 
     def build(target, root, build_dir, dependencies, cxx_link: false)
+      if target.is_a?(CMakeTarget)
+        raise Error, 'native dependency artifacts cannot be implicitly linked by an external CMake target' unless dependencies.empty?
+        return target.build_cmake(root, build_dir, @env)
+      end
       output = System.inside(build_dir, target.output_name)
       FileUtils.mkdir_p(File.dirname(output))
-      sources = target.sources.map { |s| System.inside(root, s) }
-      sources.each { |s| raise Error, "missing source: #{s}" unless File.file?(s) }
+      sources = target.sources.map { |s| System.source(root, s) }
       raise Error, "target #{target.name} has no sources" if sources.empty?
       if sources.any? { |s| File.extname(s) == '.tsc' }
         raise Error, 'Termscript executables require exactly one .tsc source' unless sources.size == 1 && target.kind == :executable
@@ -49,12 +52,10 @@ module Termak
       end
       if target.kind == :library
         # Recreate archives so removed sources cannot leave stale members behind.
-        temp = output + ".tmp-#{Process.pid}"
-        begin
-          System.run(@env.command('AR', 'ar') + ['rcs', temp] + objects, cwd: root)
-          File.rename(temp, output)
-        ensure
-          File.unlink(temp) if File.exist?(temp)
+        System.atomic_output(output) do |temporary|
+          # ar rejects an existing empty file; this is our unique temporary path.
+          File.unlink(temporary)
+          System.run(@env.command('AR', 'ar') + ['rcs', temporary] + objects, cwd: root)
         end
       else
         cxx = cxx_link || sources.any? { |s| %w[.cpp .cc .cxx].include?(File.extname(s)) }

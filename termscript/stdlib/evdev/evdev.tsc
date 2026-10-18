@@ -1,0 +1,2 @@
+# Linux input_event records, not terminal escape-sequence decoding.
+const evdev_m = G:Import("std.evdev");

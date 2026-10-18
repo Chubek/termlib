@@ -1,0 +1,2 @@
+# Ordered key lookup and prefix snapshots, not a socket adapter.
+const index_m = G:Import("std.index");

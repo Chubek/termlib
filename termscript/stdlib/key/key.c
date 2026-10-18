@@ -129,6 +129,26 @@ k_is_esc (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
   return TS_OK;
 }
 
+/* Bounded decimal parsing: scanf's integer conversions do not define behavior
+ * for overflowing input, which is not acceptable for terminal-supplied bytes. */
+static bool
+mouse_number (const char **cursor, unsigned limit, unsigned *value)
+{
+  const char *s = *cursor;
+  unsigned result = 0;
+  if (*s < '0' || *s > '9') return false;
+  do
+    {
+      unsigned digit = (unsigned)(*s++ - '0');
+      if (result > (limit - digit) / 10) return false;
+      result = result * 10 + digit;
+    }
+  while (*s >= '0' && *s <= '9');
+  *cursor = s;
+  *value = result;
+  return true;
+}
+
 static TS_Status
 k_event (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Error *e)
 {
@@ -143,13 +163,15 @@ k_event (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *ret, TS_Err
   if (len > TS_TEXT_LIMIT) { ts_error_set (e, TS_ERR_LIMIT, 0, 0, "input event exceeds 1 MiB"); return TS_ERR_LIMIT; }
   if (!strncmp (s, "\033[<", 3))
     {
-      unsigned button, col, row; int consumed = 0;
-      if (sscanf (s + 3, "%u;%u;%u%n", &button, &col, &row, &consumed) != 3 ||
-          !row || !col || button > 255 || row > 65535 || col > 65535 ||
-          (size_t) consumed + 4 != len || (s[3 + consumed] != 'M' && s[3 + consumed] != 'm'))
+      unsigned button, col, row;
+      const char *cursor = s + 3;
+      if (!mouse_number (&cursor, 255, &button) || *cursor != ';' ||
+          (++cursor, !mouse_number (&cursor, 65535, &col)) || *cursor != ';' ||
+          (++cursor, !mouse_number (&cursor, 65535, &row)) || !row || !col ||
+          (size_t)(cursor - s) + 1 != len || (*cursor != 'M' && *cursor != 'm'))
         { ts_std_ret_nil (ret); return TS_OK; }
       d = ts_dom_new_obj ();
-      const char *action = button & 64 ? "scroll" : s[3 + consumed] == 'm' ? "release" : button & 32 ? "move" : "press";
+      const char *action = button & 64 ? "scroll" : *cursor == 'm' ? "release" : button & 32 ? "move" : "press";
       if (!d || ts_dom_obj_set (d, "type", ts_dom_new_str ("mouse")) || ts_dom_obj_set (d, "action", ts_dom_new_str (action)) ||
           ts_dom_obj_set (d, "button", ts_dom_new_int (button & 3)) || ts_dom_obj_set (d, "row", ts_dom_new_int (row - 1)) ||
           ts_dom_obj_set (d, "col", ts_dom_new_int (col - 1)) || ts_dom_obj_set (d, "modifiers", ts_dom_new_int ((button >> 2) & 7))) goto oom;

@@ -1,0 +1,2 @@
+# Explicit uinput keyboard injection; importing this module touches no device.
+const uvdev_m = G:Import("std.uvdev");

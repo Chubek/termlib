@@ -1,0 +1,2 @@
+# Ordered-choice PEGs, not context-free GLR grammars. See parser-modules.md.
+const peg_m = G:Import("std.peg");

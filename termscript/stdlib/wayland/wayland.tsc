@@ -1,0 +1,2 @@
+# Registry/connection primitives; rendering and xdg-shell are not implemented.
+const wayland_m = G:Import("std.wayland");

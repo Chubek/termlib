@@ -28,7 +28,8 @@
  * - TS_VM, and the AST it builds per run, are owned by the caller
  *   (ts_vm_create / ts_vm_free, NULL-safe free).
  * - TS_Value string payloads are heap copies owned by the value; free
- *   with ts_value_free (NULL-safe).  ts_value_copy deep-copies.
+ *   with ts_value_free (NULL-safe). ts_value_copy copies strings and retains
+ *   handle aliases (it does not clone the underlying native resource).
  * - TS_Module / TS_FuncDef tables and their names are borrowed; they
  *   must stay alive while any VM may call into them (static storage).
  * - Run output (*output) is malloc'd; the caller frees it with free().
@@ -152,7 +153,11 @@ extern "C"
     } as;
   };
 
-  /* Constructors (string payloads are heap copies).  The _make_handle
+  /* Initialize every TS_Value to nil (e.g. TS_Value v = {0}) before passing
+   * it to constructors/free. Constructors release an existing payload on
+   * success. ts_value_copy requires a nil destination (or dst == src);
+   * it does not release an existing destination payload.
+   * Constructors (string payloads are heap copies). The _make_handle
    * variant wraps native data: free_fn (may be NULL) runs with ptr when
    * the last value referencing it dies; desc is a borrowed short label
    * used by ts_value_to_string; tag is an opaque identity token used by

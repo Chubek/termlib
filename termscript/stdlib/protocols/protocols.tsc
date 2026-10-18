@@ -1,0 +1,2 @@
+# Hex strings make binary frames explicit; ordinary TS strings are NUL-terminated.
+const protocols_m = G:Import("std.protocols");

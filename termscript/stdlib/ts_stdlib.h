@@ -99,6 +99,18 @@
 #include "procfs/procfs.h"
 #include "sysfs/sysfs.h"
 #include "crdt/crdt.h"
+#include "input/input.h"
+#include "font_shape/font_shape.h"
+#include "shm/shm.h"
+#include "mqueue/mqueue.h"
+#include "grammar/grammar.h"
+#include "peg/peg.h"
+#include "evdev/evdev.h"
+#include "uvdev/uvdev.h"
+#include "wayland/wayland.h"
+#include "index/index.h"
+#include "multiplex/multiplex.h"
+#include "protocols/protocols.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -106,7 +118,7 @@ extern "C"
 #endif
 
 /* Number of bundled native modules. */
-#define TS_STDLIB_NMODULES 79
+#define TS_STDLIB_NMODULES 91
 /* Metadata is borrowed immutable static storage; out-of-range returns NULL. */
 size_t ts_stdlib_module_count (void);
 const TS_Module *ts_stdlib_module_at (size_t index);

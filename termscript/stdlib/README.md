@@ -43,12 +43,21 @@ G:puts(second);
 | `draw` | `std.draw` | hline/box/bar/progress/center string builders |
 | `drm` | `std.drm` | bundled libdrm device/capability/connector discovery ([API](emulator-backends.md)) |
 | `env` | `std.env` | getenv/setenv/unset, environ list, home, pid |
+| `index` | `std.index` | bounded ordered key/value index and prefix snapshots ([contracts](infrastructure-modules.md)) |
+| `multiplex` | `std.multiplex` | POSIX readiness sets with timeout and fd cancellation ([contracts](infrastructure-modules.md)) |
+| `protocols` | `std.protocols` | incremental versioned binary framing, explicit hex script boundary ([contracts](infrastructure-modules.md)) |
+| `evdev` | `std.evdev` | Linux nonblocking native event streams and device queries ([contracts](device-modules.md)) |
+| `uvdev` | `std.uvdev` | explicit Linux uinput keyboard injection ([contracts](device-modules.md)) |
+| `wayland` | `std.wayland` | optional Wayland connection/registry discovery and poll-loop primitives ([contracts](device-modules.md)) |
 | `emulator` | `std.emulator` | PTY + VT + font-rendered compositor surfaces and terminal event loops ([API](emulator/README.md)) |
 | `exec` | `std.exec` | system/capture/ok, shell quoting |
 | `expect` | `std.expect` | spawn + deadline substring matching over pipes |
 | `fsm` | `std.fsm` | table-driven finite state machines |
 | `glob` | `std.glob` | fnmatch matching, directory glob, quoting |
+| `grammar` | `std.grammar` | bounded scannerless GLR descriptor builder, explicit ambiguity policy ([contracts](parser-modules.md)) |
 | `http` | `std.http` | minimal HTTP/1.0 GET/POST/status/headers/url_parse (no TLS by policy) |
+| `input` | `std.input` | bounded incremental terminal key/mouse/paste framing ([contracts](new-modules.md#incremental-input-and-font-shaping)) |
+| `font_shape` | `std.font_shape` | shared font handles and HarfBuzz glyph shaping ([contracts](new-modules.md#incremental-input-and-font-shaping)) |
 | `io` | `std.io` | whole-file read/write/append, exists/size/remove/rename/mkdir/lines |
 | `ipc` | `std.ipc` | flock file locks, FIFOs |
 | `json` | `std.json` | strict JSON documents as handles |
@@ -56,9 +65,11 @@ G:puts(second);
 | `list` | `std.list` | ordered value sequences over the shared list store |
 | `log` | `std.log` | leveled file/stderr logging with timestamps |
 | `map` | `std.map` | insertion-ordered string tables with defaults |
+| `mqueue` | `std.mqueue` | bounded nonblocking POSIX message queues ([contracts](new-modules.md#posix-shared-memory-and-message-queues)) |
 | `menu` | `std.menu` | numbered menus: format/pick/confirm/select |
 | `notify` | `std.notify` | bell/title/flash strings, notify-send toast |
 | `panel` | `std.panel` | titled boxes, side-by-side columns |
+| `peg` | `std.peg` | byte-oriented PEG compiler, ordered choice/lookahead, bounded backtracking and owned trees ([contracts](parser-modules.md)) |
 | `pipe` | `std.pipe` | popen streams as handles |
 | `poll` | `std.poll` | bounded multi-fd readiness sets and deadline-aware waits ([API](emulator-backends.md)) |
 | `pty` | `std.pty` | standalone minipty: spawn/read/write/wait/close |
@@ -70,6 +81,7 @@ G:puts(second);
 | `sched` | `std.sched` | monotonic/wall clocks, sleep_ms, elapsed |
 | `screen` | `std.screen` | in-memory character grids |
 | `shell` | `std.shell` | LibShell runtime: shell state, typed commands/pipelines, parsing, redirection and bounded capture ([API](shell/README.md)) |
+| `shm` | `std.shm` | bounded POSIX named shared memory ([contracts](new-modules.md#posix-shared-memory-and-message-queues)) |
 | `signal` | `std.signal` | signal numbers/names/delivery (no handlers: no callbacks by design) |
 | `socket` | `std.socket` | blocking TCP connect/send/recv/listen/accept/close |
 | `stream` | `std.stream` | append-only buffers with consuming getline |

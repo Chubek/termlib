@@ -1,0 +1,2 @@
+# Shares font handles with std.font; shape returns a list of glyph DOM values.
+const font_shape_m = G:Import("std.font_shape");

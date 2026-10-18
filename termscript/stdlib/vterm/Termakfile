@@ -1,0 +1,2 @@
+require_relative '../../termak/Stdlib'
+termscript_module :vterm

@@ -1,0 +1,22 @@
+G:import("input");
+G:import("json");
+G:import("font_shape");
+use env, list
+const font_path = env.get("TS_TEST_FONT");
+const font = font_shape_m:open(font_path);
+const glyphs = font_shape_m:shape(font, "abc", "ltr", "en");
+const glyph_count = list.len(glyphs);
+if glyph_count != 3 { G:die("incorrect shaping result") }
+const decoder = input_m:new();
+input_m:feed(decoder, "\e[");
+const incomplete = input_m:next(decoder);
+if incomplete { G:die("incomplete escape emitted") }
+input_m:feed(decoder, "Ax");
+const arrow = input_m:next(decoder);
+const name = json_m:get(arrow, "name");
+if name != "up" { G:die("incorrect arrow") }
+const letter = input_m:next(decoder);
+const text = json_m:get(letter, "name");
+if text != "x" { G:die("incorrect text") }
+input_m:close(decoder);
+G:puts("input decoding OK");

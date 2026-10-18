@@ -1,0 +1,22 @@
+G:import("peg");
+G:import("grammar");
+use json, list
+const peg = peg_m:compile("Root <- &Word Word !.; Word <- [a-z]+");
+const tree = peg_m:parse(peg, "hello");
+const word = json.get(tree, "children.0.text");
+if word != "hello" { G:die("PEG tree mismatch") }
+const mismatch = peg_m:test(peg, "123");
+if mismatch { G:die("PEG test mismatch") }
+peg_m:close(peg);
+const grammar = grammar_m:new("Root");
+grammar_m:nonterminal(grammar, "Root");
+grammar_m:pattern(grammar, "Word", "[a-z]+");
+const body = list.new();
+list.push(body, "Word");
+grammar_m:rule(grammar, "Root", body, "Document");
+grammar_m:build(grammar);
+const parsed = grammar_m:parse(grammar, "hello");
+grammar_m:close(grammar);
+const text = json.get(parsed, "children.0.text");
+if text != "hello" { G:die("GLR tree mismatch") }
+G:puts("parser modules OK");

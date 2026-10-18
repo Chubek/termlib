@@ -1,0 +1,11 @@
+# Capability probing must neither connect to a compositor nor create a device.
+G:import("evdev");
+G:import("uvdev");
+G:import("wayland");
+const ev = evdev_m:available();
+const uv = uvdev_m:available();
+const wl = wayland_m:available();
+G:puts(ev);
+G:puts(uv);
+G:puts(wl);
+G:puts("device modules OK");

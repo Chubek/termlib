@@ -1,0 +1,2 @@
+# Incremental decoding; input_m:next(decoder, true) resolves a lone Escape.
+const input_m = G:Import("std.input");

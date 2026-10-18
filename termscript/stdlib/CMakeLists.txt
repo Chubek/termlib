@@ -26,9 +26,10 @@ set(TS_STDLIB_MODULES
   sched screen shell signal socket stream style syntax table termcap terminfo test text_search theme
   terminal termios toml tui utf8 verbatim vterm widget word_motion yaml drm poll x11 compositor emulator
   gapbuffer piecetable memory persian_script set stdio datagram procfs sysfs crdt
+  input font_shape shm mqueue grammar peg evdev uvdev wayland index multiplex protocols
 )
 
-set(TS_STDLIB_SOURCES
+set(TS_STDLIB_COMMON_SOURCES
   common/sbuf.c
   common/values.c
   common/list_store.c
@@ -37,8 +38,8 @@ set(TS_STDLIB_SOURCES
   common/grid.c
   common/html.c
   common/fs_view.c
-  ts_stdlib.c
 )
+set(TS_STDLIB_SOURCES ${TS_STDLIB_COMMON_SOURCES} ts_stdlib.c)
 foreach (m IN LISTS TS_STDLIB_MODULES)
   if(m STREQUAL "shell")
     list(APPEND TS_STDLIB_SOURCES ${m}/${m}.cpp)
@@ -95,6 +96,19 @@ if(NOT EXISTS "${TS_STDLIB_LIBSHELL}/include/LibShell-Posix.hpp"
 endif()
 
 find_package(PkgConfig REQUIRED)
+include(CheckSymbolExists)
+include(CheckLibraryExists)
+include(CMakePushCheckState)
+# Linux before glibc 2.34 keeps POSIX IPC in librt. Newer libc and BSD systems
+# may provide it directly. The mqueue adapter reports unavailable explicitly on
+# platforms without mq_open; no queue operation succeeds as a placeholder.
+cmake_push_check_state(RESET)
+check_library_exists(rt mq_open "" TS_IPC_NEEDS_RT)
+if(TS_IPC_NEEDS_RT)
+  set(CMAKE_REQUIRED_LIBRARIES rt)
+endif()
+check_symbol_exists(mq_open "mqueue.h" TS_HAVE_MQUEUE)
+cmake_pop_check_state()
 pkg_check_modules(TS_UTF8PROC REQUIRED IMPORTED_TARGET libutf8proc)
 pkg_check_modules(TS_FRIBIDI REQUIRED IMPORTED_TARGET fribidi)
 pkg_check_modules(TS_FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
@@ -113,6 +127,20 @@ if(TERMSCRIPT_X11)
   endif()
 endif()
 set(TS_DRM_DEFAULT OFF)
+option(TERMSCRIPT_WAYLAND "Enable optional Wayland registry/connection support" ON)
+if(TERMSCRIPT_WAYLAND)
+  # 1.23 provides the bounded connection-buffer API used by this adapter.
+  pkg_check_modules(TS_WAYLAND QUIET IMPORTED_TARGET wayland-client>=1.23)
+  if(TS_WAYLAND_FOUND)
+    list(APPEND TS_EXTRA_PKGS TS_WAYLAND)
+    string(APPEND TS_STDLIB_EXTRA_REQUIRES " wayland-client >= 1.23")
+    if(BUILD_TESTING)
+      pkg_check_modules(TS_WAYLAND_SERVER QUIET IMPORTED_TARGET GLOBAL wayland-server)
+    endif()
+  else()
+    message(STATUS "Wayland client >= 1.23 not found: std.wayland.available will return false")
+  endif()
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(TS_DRM_DEFAULT ON)
 endif()
@@ -148,6 +176,18 @@ add_library(termscript_stdlib STATIC
   ${TS_STDLIB_SHELL_PARSER}
 )
 add_library(termscript::stdlib ALIAS termscript_stdlib)
+if(TERMSCRIPT_WAYLAND AND TS_WAYLAND_FOUND)
+  target_compile_definitions(termscript_stdlib PRIVATE TS_STD_HAVE_WAYLAND=1)
+  target_link_libraries(termscript_stdlib PRIVATE PkgConfig::TS_WAYLAND)
+endif()
+if(TS_HAVE_MQUEUE)
+  target_compile_definitions(termscript_stdlib PRIVATE TS_STD_HAVE_MQUEUE=1)
+endif()
+set(TS_STDLIB_IPC_LIBS "")
+if(TS_IPC_NEEDS_RT)
+  target_link_libraries(termscript_stdlib PRIVATE rt)
+  set(TS_STDLIB_IPC_LIBS " -lrt")
+endif()
 if(TERMSCRIPT_X11 AND TS_X11_FOUND)
   target_compile_definitions(termscript_stdlib PRIVATE TS_STD_HAVE_X11=1)
   target_link_libraries(termscript_stdlib PRIVATE PkgConfig::TS_X11)
@@ -183,6 +223,7 @@ foreach(entry IN LISTS TS_CSS_COLORS)
 endforeach()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/css_named_colors.h" "${TS_CSS_COLOR_TABLE}")
 target_link_libraries(termscript_stdlib PUBLIC termscript_standalone)
+target_link_libraries(termscript_stdlib PRIVATE novoparse_runtime)
 target_link_libraries(termscript_stdlib PRIVATE Threads::Threads)
 target_link_libraries(termscript_stdlib PRIVATE lexbor_static
   PkgConfig::TS_UTF8PROC PkgConfig::TS_FRIBIDI PkgConfig::TS_FONTCONFIG
@@ -192,6 +233,10 @@ target_link_libraries(termscript_stdlib PRIVATE lexbor_static
 # native dependency closure for that process and for installed pkg-config.
 set(TS_DRIVER_NATIVE_FLAGS "-pthread")
 set(TS_DRIVER_STATIC_FLAGS "-pthread")
+if(TS_IPC_NEEDS_RT)
+  list(APPEND TS_DRIVER_NATIVE_FLAGS -lrt)
+  list(APPEND TS_DRIVER_STATIC_FLAGS -lrt)
+endif()
 foreach(pkg IN ITEMS TS_UTF8PROC TS_FRIBIDI TS_FONTCONFIG TS_FREETYPE TS_HARFBUZZ ${TS_EXTRA_PKGS})
   foreach(dir IN LISTS ${pkg}_LIBRARY_DIRS)
     list(APPEND TS_DRIVER_NATIVE_FLAGS "-L${dir}")
@@ -238,6 +283,39 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(termscript_stdlib PRIVATE -Wall -Wextra)
 endif()
 
+# Real per-module adapter archives used by the Termakfiles. They deliberately
+# share the aggregate library's verified feature/dependency configuration.
+# Archives are optional, excluded from ordinary builds/default installs, and
+# require the full stdlib/runtime dependency closure when linked by a consumer.
+function(ts_stdlib_adapter_archive name)
+  set(adapter "termscript_std_${name}")
+  add_library(${adapter} STATIC EXCLUDE_FROM_ALL ${ARGN})
+  target_compile_features(${adapter} PRIVATE cxx_std_20)
+  target_include_directories(${adapter} PRIVATE
+    $<TARGET_PROPERTY:termscript_stdlib,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(${adapter} PRIVATE
+    $<TARGET_PROPERTY:termscript_stdlib,COMPILE_DEFINITIONS>)
+  target_compile_options(${adapter} PRIVATE
+    $<TARGET_PROPERTY:termscript_stdlib,COMPILE_OPTIONS>)
+  target_link_libraries(${adapter} PRIVATE termscript_stdlib
+    $<TARGET_PROPERTY:termscript_stdlib,LINK_LIBRARIES>)
+  install(TARGETS ${adapter} ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    COMPONENT "termscript-module-${name}" EXCLUDE_FROM_ALL)
+endfunction()
+foreach(m IN LISTS TS_STDLIB_MODULES ITEMS font_discovery stylesheet)
+  if(m STREQUAL "font_discovery")
+    set(adapter_source font/font.c)
+  elseif(m STREQUAL "stylesheet")
+    set(adapter_source css/css.c)
+  elseif(m STREQUAL "shell")
+    set(adapter_source shell/shell.cpp)
+  else()
+    set(adapter_source "${m}/${m}.c")
+  endif()
+  ts_stdlib_adapter_archive(${m} ${adapter_source})
+endforeach()
+ts_stdlib_adapter_archive(common ${TS_STDLIB_COMMON_SOURCES})
+
 # ── Q regeneration (optional) ─────────────────────────────────────
 # Renews gen/ts_valvec.h + gen/ts_strvec.h from q/tsvec.q through
 # domqlib's Q (sourceless .pyc driven by q/run_qc.py).  Runs only when
@@ -283,6 +361,7 @@ install(FILES ts_stdlib.h
 )
 install(FILES common/ts_std_common.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript/stdlib/common
+  COMPONENT termscript-module-common
 )
 install(FILES gen/ts_valvec.h gen/ts_strvec.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript/stdlib/gen
@@ -293,9 +372,11 @@ install(FILES q/tsvec.q q/run_qc.py
 foreach (m IN LISTS TS_STDLIB_MODULES ITEMS stylesheet font_discovery)
   install(FILES ${m}/${m}.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/termscript/stdlib/${m}
+    COMPONENT "termscript-module-${m}"
   )
   install(FILES ${m}/${m}.tsc
     DESTINATION ${CMAKE_INSTALL_DATADIR}/termscript/stdlib/${m}
+    COMPONENT "termscript-module-${m}"
   )
 endforeach ()
 
@@ -305,7 +386,7 @@ install(FILES shell/README.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/shell)
 install(FILES emulator-backends.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib)
-install(FILES new-modules.md MANIFEST.yaml DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib)
+install(FILES new-modules.md parser-modules.md device-modules.md infrastructure-modules.md MANIFEST.yaml DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib)
 install(FILES x11/window.tsc DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/x11)
 install(FILES drm/discover.tsc DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/drm)
 install(FILES compositor/README.md DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/compositor)

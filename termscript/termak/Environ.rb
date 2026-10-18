@@ -25,5 +25,9 @@ module Termak
     def [](name)
       @values[name]
     end
+
+    def to_h
+      @values.dup
+    end
   end
 end

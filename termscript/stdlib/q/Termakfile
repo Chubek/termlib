@@ -1,0 +1,3 @@
+# Optional generator inputs; regeneration requires the documented Q bytecode.
+install_file 'tsvec.q', 'share/termlib/stdlib-q/tsvec.q'
+install_file 'run_qc.py', 'share/termlib/stdlib-q/run_qc.py'

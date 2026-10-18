@@ -1,0 +1,31 @@
+# Runnable VM/C/QBE/Jiterati conformance fixture.
+G:import("index");
+G:import("multiplex");
+G:import("protocols");
+use json, list
+const keys = index_m:new();
+index_m:set(keys, "beta", 2);
+index_m:set(keys, "alpha", 1);
+index_m:set(keys, "alphabet", 3);
+if index_m:get(keys, "alpha") != 1 { G:die("index lookup") }
+const matches = index_m:prefix(keys, "alph");
+if list.len(matches) != 2 { G:die("index prefix") }
+if list.get(matches, 0) != "alpha" { G:die("index ordering") }
+index_m:close(keys);
+const watches = multiplex_m:new();
+if multiplex_m:len(watches) != 0 { G:die("multiplex size") }
+multiplex_m:watch(watches, 1, 2);
+const events = multiplex_m:wait(watches, 1000);
+if list.get(events, 0) != 1 { G:die("multiplex ready descriptor") }
+if list.get(events, 1) != 2 { G:die("multiplex ready mask") }
+multiplex_m:remove(watches, 1);
+multiplex_m:close(watches);
+const wire = protocols_m:encode_hex(42, "0061ff");
+const decoder = protocols_m:new();
+const frame = protocols_m:feed_hex(decoder, wire);
+if !json.get(frame, "ready") { G:die("protocol incomplete") }
+if json.get(frame, "type") != 42 { G:die("protocol type") }
+if json.get(frame, "payload_hex") != "0061ff" { G:die("protocol binary payload") }
+protocols_m:close(decoder);
+if json.get(frame, "payload_hex") != "0061ff" { G:die("protocol snapshot lifetime") }
+G:puts("infrastructure modules OK");

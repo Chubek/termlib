@@ -1,0 +1,3 @@
+# Full source build/install, including runtime and native dependency closure.
+require_relative '../termak/Stdlib'
+termscript_stdlib

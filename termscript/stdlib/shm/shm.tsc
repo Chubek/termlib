@@ -1,0 +1,2 @@
+# Names persist after close; unlink explicitly when no further opens are needed.
+const shm_m = G:Import("std.shm");

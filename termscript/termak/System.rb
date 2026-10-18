@@ -52,5 +52,16 @@ module Termak
       raise Error, "path escapes root: #{relative}" unless path.start_with?(root + File::SEPARATOR)
       path
     end
+
+    # Sources must remain inside the manifest root after resolving symlinks too.
+    # This is validation, not a sandbox against concurrent filesystem mutation.
+    def source(root, relative)
+      path = inside(root, relative)
+      raise Error, "missing source: #{path}" unless File.file?(path)
+      resolved = File.realpath(path)
+      base = File.realpath(root)
+      raise Error, "source escapes root through symlink: #{relative}" unless resolved.start_with?(base + File::SEPARATOR)
+      path
+    end
   end
 end

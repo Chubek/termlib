@@ -3,6 +3,7 @@ module Termak
   class Install
     def initialize(prefix: '/usr/local', destdir: nil)
       raise Error, 'install prefix must be absolute' unless prefix.start_with?('/')
+      raise Error, 'install prefix cannot contain traversal' if prefix.split('/').include?('..')
       @root = destdir ? File.join(File.expand_path(destdir), prefix.sub(%r{\A/+}, '')) : prefix
     end
 
@@ -20,6 +21,17 @@ module Termak
       System.atomic_write(destination, File.binread(source))
       File.chmod(executable ? 0o755 : 0o644, destination)
       destination
+    end
+
+    def check_root
+      cursor = File.expand_path(@root)
+      loop do
+        raise Error, "symlink in install root: #{cursor}" if File.symlink?(cursor)
+        parent = File.dirname(cursor)
+        break if parent == cursor
+        cursor = parent
+      end
+      true
     end
   end
 end
