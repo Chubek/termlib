@@ -10,6 +10,8 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <locale.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -20,6 +22,7 @@ struct ts_dom
   ts_dom_kind_t kind;
   bool boolean;
   int64_t integer;
+  double real;
   char *string;
   ts_dom_t **items;
   size_t nitems, cap_items;
@@ -62,6 +65,17 @@ ts_dom_new_int (int64_t i)
     d->integer = i;
   return d;
 }
+ts_dom_t *
+ts_dom_new_float (double number)
+{
+  if (!isfinite (number))
+    return NULL;
+  ts_dom_t *d = dom_new (TS_DOM_FLOAT);
+  if (d)
+    d->real = number;
+  return d;
+}
+
 ts_dom_t *
 ts_dom_new_str (const char *s)
 {
@@ -204,26 +218,31 @@ json_hex (char c)
   return -1;
 }
 
-/* Append code point as UTF-8; caller validated ranges loosely. */
-static void
+/* Append a validated Unicode scalar as UTF-8. */
+static int
 json_emit_utf8 (ts_sbuf_t *b, unsigned cp)
 {
   char tmp[4];
   if (cp < 0x80)
-    ts_sbuf_ch (b, (char) cp);
+    return ts_sbuf_ch (b, (char)cp);
   else if (cp < 0x800)
     {
       tmp[0] = (char) (0xC0 | (cp >> 6));
       tmp[1] = (char) (0x80 | (cp & 0x3F));
-      ts_sbuf_put (b, tmp, 2);
+      return ts_sbuf_put (b, tmp, 2);
     }
-  else
+  else if (cp < 0x10000)
     {
       tmp[0] = (char) (0xE0 | (cp >> 12));
       tmp[1] = (char) (0x80 | ((cp >> 6) & 0x3F));
       tmp[2] = (char) (0x80 | (cp & 0x3F));
-      ts_sbuf_put (b, tmp, 3);
+      return ts_sbuf_put (b, tmp, 3);
     }
+  tmp[0] = (char)(0xF0 | (cp >> 18));
+  tmp[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+  tmp[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+  tmp[3] = (char)(0x80 | (cp & 0x3F));
+  return ts_sbuf_put (b, tmp, 4);
 }
 
 static bool
@@ -254,14 +273,38 @@ json_string (json_p_t *p, ts_dom_t **out)
           e = p->s[p->pos++];
           switch (e)
             {
-            case '"': ts_sbuf_ch (&b, '"'); break;
-            case '\\': ts_sbuf_ch (&b, '\\'); break;
-            case '/': ts_sbuf_ch (&b, '/'); break;
-            case 'b': ts_sbuf_ch (&b, '\b'); break;
-            case 'f': ts_sbuf_ch (&b, '\f'); break;
-            case 'n': ts_sbuf_ch (&b, '\n'); break;
-            case 'r': ts_sbuf_ch (&b, '\r'); break;
-            case 't': ts_sbuf_ch (&b, '\t'); break;
+            case '"':
+              if (ts_sbuf_ch (&b, '"'))
+                goto memory;
+              break;
+            case '\\':
+              if (ts_sbuf_ch (&b, '\\'))
+                goto memory;
+              break;
+            case '/':
+              if (ts_sbuf_ch (&b, '/'))
+                goto memory;
+              break;
+            case 'b':
+              if (ts_sbuf_ch (&b, '\b'))
+                goto memory;
+              break;
+            case 'f':
+              if (ts_sbuf_ch (&b, '\f'))
+                goto memory;
+              break;
+            case 'n':
+              if (ts_sbuf_ch (&b, '\n'))
+                goto memory;
+              break;
+            case 'r':
+              if (ts_sbuf_ch (&b, '\r'))
+                goto memory;
+              break;
+            case 't':
+              if (ts_sbuf_ch (&b, '\t'))
+                goto memory;
+              break;
             case 'u':
               {
                 unsigned cp = 0;
@@ -299,15 +342,14 @@ json_string (json_p_t *p, ts_dom_t **out)
                         p->pos += 6;
                       }
                   }
-                if (cp > 0x10FFFF)
-                  cp = 0xFFFD;
-                if (cp >= 0x10000)
+                if (!cp || (cp >= 0xD800 && cp <= 0xDFFF))
                   {
-                    /* Beyond BMP: emit replacement (documented limit). */
-                    json_emit_utf8 (&b, 0xFFFD);
+                    ts_sbuf_free (&b);
+                    return json_fail (p, cp ? "unpaired Unicode surrogate"
+                                            : "NUL in string is unsupported");
                   }
-                else
-                  json_emit_utf8 (&b, cp);
+                if (json_emit_utf8 (&b, cp))
+                  goto memory;
               }
               break;
             default:
@@ -320,8 +362,8 @@ json_string (json_p_t *p, ts_dom_t **out)
           ts_sbuf_free (&b);
           return json_fail (p, "control character in string");
         }
-      else
-        ts_sbuf_ch (&b, c);
+      else if (ts_sbuf_ch (&b, c))
+        goto memory;
     }
   *out = ts_dom_new_str (b.data ? b.data : "");
   ts_sbuf_free (&b);
@@ -331,6 +373,10 @@ json_string (json_p_t *p, ts_dom_t **out)
       return false;
     }
   return true;
+memory:
+  ts_sbuf_free (&b);
+  ts_std_oom (p->error);
+  return false;
 }
 
 static bool
@@ -340,14 +386,30 @@ json_number (json_p_t *p, ts_dom_t **out)
   bool is_double = false;
   if (p->s[p->pos] == '-')
     p->pos++;
-  while (p->pos < p->len && isdigit ((unsigned char) p->s[p->pos]))
-    p->pos++;
+  if (p->pos >= p->len)
+    return json_fail (p, "missing number");
+  if (p->s[p->pos] == '0')
+    {
+      p->pos++;
+      if (p->pos < p->len && isdigit ((unsigned char)p->s[p->pos]))
+        return json_fail (p, "leading zero in number");
+    }
+  else
+    {
+      if (p->s[p->pos] < '1' || p->s[p->pos] > '9')
+        return json_fail (p, "missing number digits");
+      while (p->pos < p->len && isdigit ((unsigned char)p->s[p->pos]))
+        p->pos++;
+    }
   if (p->pos < p->len && p->s[p->pos] == '.')
     {
       is_double = true;
       p->pos++;
+      size_t digits = p->pos;
       while (p->pos < p->len && isdigit ((unsigned char) p->s[p->pos]))
         p->pos++;
+      if (p->pos == digits)
+        return json_fail (p, "missing fractional digits");
     }
   if (p->pos < p->len && (p->s[p->pos] == 'e' || p->s[p->pos] == 'E'))
     {
@@ -355,23 +417,31 @@ json_number (json_p_t *p, ts_dom_t **out)
       p->pos++;
       if (p->pos < p->len && (p->s[p->pos] == '+' || p->s[p->pos] == '-'))
         p->pos++;
+      size_t digits = p->pos;
       while (p->pos < p->len && isdigit ((unsigned char) p->s[p->pos]))
         p->pos++;
+      if (p->pos == digits)
+        return json_fail (p, "missing exponent digits");
     }
   if (is_double)
     {
-      /* Documented coercion: doubles truncate toward zero into ints. */
       char *tmp = strndup (p->s + start, p->pos - start);
-      double dv;
+      TS_Value value = { 0 };
       if (!tmp)
         {
           ts_error_set (p->error, TS_ERR_NOMEM, ENOMEM, 0,
                         "out of memory");
           return false;
         }
-      dv = strtod (tmp, NULL);
+      TS_Status status = ts_value_parse_float (&value, tmp, p->error);
       free (tmp);
-      *out = ts_dom_new_int ((int64_t) dv);
+      if (status != TS_OK)
+        {
+          if (status == TS_ERR_NOMEM)
+            return false;
+          return json_fail (p, "floating-point number out of range");
+        }
+      *out = ts_dom_new_float (value.as.real);
     }
   else
     {
@@ -386,8 +456,9 @@ json_number (json_p_t *p, ts_dom_t **out)
         }
       errno = 0;
       v = strtoll (tmp, &end, 10);
+      bool invalid = !end || *end;
       free (tmp);
-      if (errno == ERANGE)
+      if (errno == ERANGE || invalid)
         return json_fail (p, "number out of range");
       *out = ts_dom_new_int ((int64_t) v);
     }
@@ -402,6 +473,11 @@ json_number (json_p_t *p, ts_dom_t **out)
 static bool
 json_lit (json_p_t *p, const char *word, ts_dom_t *node, ts_dom_t **out)
 {
+  if (!node)
+    {
+      ts_std_oom (p->error);
+      return false;
+    }
   size_t n = strlen (word);
   if (p->len - p->pos < n || memcmp (p->s + p->pos, word, n) != 0)
     {
@@ -418,7 +494,10 @@ json_array (json_p_t *p, ts_dom_t **out)
 {
   ts_dom_t *arr = ts_dom_new_arr ();
   if (!arr)
-    return false;
+    {
+      ts_std_oom (p->error);
+      return false;
+    }
   if (++p->depth > 64)
     {
       ts_dom_free (arr);
@@ -477,7 +556,10 @@ json_object (json_p_t *p, ts_dom_t **out)
 {
   ts_dom_t *obj = ts_dom_new_obj ();
   if (!obj)
-    return false;
+    {
+      ts_std_oom (p->error);
+      return false;
+    }
   if (++p->depth > 64)
     {
       ts_dom_free (obj);
@@ -586,6 +668,7 @@ TS_Status
 ts_dom_parse_json (const char *s, ts_dom_t **out, TS_Error *error)
 {
   json_p_t p;
+  TS_Error diagnostic = { 0 };
   ts_dom_t *root = NULL;
   if (!s || !out)
     {
@@ -596,9 +679,16 @@ ts_dom_parse_json (const char *s, ts_dom_t **out, TS_Error *error)
   p.len = strlen (s);
   p.pos = 0;
   p.depth = 0;
-  p.error = error;
-  if (!json_value (&p, &root))
-    return error ? error->code : TS_ERR_PARSE;
+  p.error = &diagnostic;
+  if (!json_value (&p, &root) || !root)
+    {
+      ts_dom_free (root);
+      if (diagnostic.code == TS_OK)
+        ts_std_oom (&diagnostic);
+      if (error)
+        *error = diagnostic;
+      return diagnostic.code;
+    }
   json_ws (&p);
   if (p.pos != p.len)
     {
@@ -661,7 +751,7 @@ yaml_clean (char *line)
     line[--n] = '\0';
 }
 
-static ts_dom_t *yaml_scalar (const char *text);
+static ts_dom_t *yaml_scalar (const char *text, TS_Error *error);
 
 static ts_dom_t *yaml_block (yaml_p_t *p, size_t indent);
 
@@ -683,9 +773,9 @@ yaml_seq_item_value (yaml_p_t *p, const char *rest, size_t indent)
           return ts_dom_new_null ();
         }
       sub = yaml_block (p, yaml_indent (p->lines[p->idx]));
-      return sub ? sub : ts_dom_new_null ();
+      return sub;
     }
-  return yaml_scalar (rest);
+  return yaml_scalar (rest, p->error);
 }
 
 /* Split "key: value" at the first colon that is followed by space/EOL.
@@ -806,7 +896,7 @@ yaml_block (yaml_p_t *p, size_t indent)
                 }
             }
           else
-            node = yaml_scalar (v);
+            node = yaml_scalar (v, p->error);
         }
         free (val);
         if (!node || ts_dom_obj_set (obj, key, node) != TS_OK)
@@ -822,7 +912,7 @@ yaml_block (yaml_p_t *p, size_t indent)
 }
 
 static ts_dom_t *
-yaml_scalar (const char *text)
+yaml_scalar (const char *text, TS_Error *error)
 {
   size_t n = strlen (text);
   char *end = NULL;
@@ -836,21 +926,31 @@ yaml_scalar (const char *text)
       ts_sbuf_init (&b);
       for (i = 1; i + 1 < n; i++)
         {
+          char c = text[i];
           if (text[i] == '\\' && i + 2 <= n)
             {
-              char e = text[++i];
-              switch (e)
+              c = text[++i];
+              switch (c)
                 {
-                case 'n': ts_sbuf_ch (&b, '\n'); break;
-                case 't': ts_sbuf_ch (&b, '\t'); break;
-                case 'r': ts_sbuf_ch (&b, '\r'); break;
-                case '"': ts_sbuf_ch (&b, '"'); break;
-                case '\\': ts_sbuf_ch (&b, '\\'); break;
-                default: ts_sbuf_ch (&b, e); break;
+                case 'n':
+                  c = '\n';
+                  break;
+                case 't':
+                  c = '\t';
+                  break;
+                case 'r':
+                  c = '\r';
+                  break;
+                default:
+                  break;
                 }
             }
-          else
-            ts_sbuf_ch (&b, text[i]);
+          if (ts_sbuf_ch (&b, c))
+            {
+              ts_sbuf_free (&b);
+              ts_std_oom (error);
+              return NULL;
+            }
         }
       d = ts_dom_new_str (b.data ? b.data : "");
       ts_sbuf_free (&b);
@@ -865,13 +965,17 @@ yaml_scalar (const char *text)
       ts_sbuf_init (&b);
       for (i = 1; i + 1 < n; i++)
         {
+          char c = text[i];
           if (text[i] == '\'' && text[i + 1] == '\'')
             {
-              ts_sbuf_ch (&b, '\'');
               i++;
             }
-          else
-            ts_sbuf_ch (&b, text[i]);
+          if (ts_sbuf_ch (&b, c))
+            {
+              ts_sbuf_free (&b);
+              ts_std_oom (error);
+              return NULL;
+            }
         }
       d = ts_dom_new_str (b.data ? b.data : "");
       ts_sbuf_free (&b);
@@ -890,6 +994,25 @@ yaml_scalar (const char *text)
   iv = strtoll (text, &end, 10);
   if (errno == 0 && end && !*end && end != text)
     return ts_dom_new_int ((int64_t) iv);
+  if (strchr (text, '.') || strchr (text, 'e') || strchr (text, 'E'))
+    {
+      TS_Value value = { 0 };
+      TS_Error diagnostic = { 0 };
+      TS_Status status = ts_value_parse_float (&value, text, &diagnostic);
+      if (status == TS_OK)
+        {
+          ts_dom_t *number = ts_dom_new_float (value.as.real);
+          if (!number)
+            ts_std_oom (error);
+          return number;
+        }
+      if (status != TS_ERR_INVAL)
+        {
+          if (error)
+            *error = diagnostic;
+          return NULL;
+        }
+    }
   return ts_dom_new_str (text);
 }
 
@@ -897,6 +1020,7 @@ TS_Status
 ts_dom_parse_yaml (const char *s, ts_dom_t **out, TS_Error *error)
 {
   yaml_p_t p;
+  TS_Error diagnostic = { 0 };
   ts_dom_t *root;
   char *copy;
   size_t i, n = 1;
@@ -930,7 +1054,7 @@ ts_dom_parse_yaml (const char *s, ts_dom_t **out, TS_Error *error)
       }
   }
   p.idx = 0;
-  p.error = error;
+  p.error = &diagnostic;
   while (p.idx < p.nlines && yaml_blank (p.lines[p.idx]))
     p.idx++;
   if (p.idx >= p.nlines)
@@ -941,8 +1065,11 @@ ts_dom_parse_yaml (const char *s, ts_dom_t **out, TS_Error *error)
   free (copy);
   if (!root)
     {
-      ts_error_set (error, TS_ERR_NOMEM, ENOMEM, 0, "out of memory");
-      return TS_ERR_NOMEM;
+      if (diagnostic.code == TS_OK)
+        ts_std_oom (&diagnostic);
+      if (error)
+        *error = diagnostic;
+      return diagnostic.code;
     }
   *out = root;
   return TS_OK;
@@ -950,11 +1077,11 @@ ts_dom_parse_yaml (const char *s, ts_dom_t **out, TS_Error *error)
 
 /* ---------------- TOML via tomlc99 ---------------- */
 
-static ts_dom_t *toml_to_dom_table (const toml_table_t *t);
-static ts_dom_t *toml_to_dom_array (const toml_array_t *a);
+static ts_dom_t *toml_to_dom_table (const toml_table_t *t, TS_Status *status);
+static ts_dom_t *toml_to_dom_array (const toml_array_t *a, TS_Status *status);
 
 static ts_dom_t *
-toml_to_dom_datum (toml_datum_t d, char kind)
+toml_to_dom_datum (toml_datum_t d, char kind, TS_Status *status)
 {
   if (!d.ok)
     return ts_dom_new_null ();
@@ -971,7 +1098,12 @@ toml_to_dom_datum (toml_datum_t d, char kind)
     case 'i':
       return ts_dom_new_int (d.u.i);
     case 'd':
-      return ts_dom_new_int ((int64_t) d.u.d);
+      if (!isfinite (d.u.d))
+        {
+          *status = TS_ERR_PARSE;
+          return NULL;
+        }
+      return ts_dom_new_float (d.u.d);
     default:
       {
         /* Timestamps and unknowns become strings. */
@@ -994,7 +1126,7 @@ toml_to_dom_datum (toml_datum_t d, char kind)
 }
 
 static ts_dom_t *
-toml_to_dom_array (const toml_array_t *a)
+toml_to_dom_array (const toml_array_t *a, TS_Status *status)
 {
   ts_dom_t *arr = ts_dom_new_arr ();
   int n, i;
@@ -1011,21 +1143,27 @@ toml_to_dom_array (const toml_array_t *a)
     {
       ts_dom_t *item = NULL;
       if (kind == 't')
-        item = toml_to_dom_table (toml_table_at (a, i));
+        item = toml_to_dom_table (toml_table_at (a, i), status);
       else if (kind == 'a')
-        item = toml_to_dom_array (toml_array_at (a, i));
+        item = toml_to_dom_array (toml_array_at (a, i), status);
       else if (kind == 'v')
         {
           /* Probe value type in s/b/i/d order. */
           toml_datum_t d = toml_string_at (a, i);
+          const char *raw = toml_raw_at (a, i);
+          if (!d.ok && raw && (*raw == '"' || *raw == '\''))
+            {
+              ts_dom_free (arr);
+              return NULL;
+            }
           if (d.ok)
-            item = toml_to_dom_datum (d, 's');
+            item = toml_to_dom_datum (d, 's', status);
           else if ((d = toml_bool_at (a, i)).ok)
-            item = toml_to_dom_datum (d, 'b');
+            item = toml_to_dom_datum (d, 'b', status);
           else if ((d = toml_int_at (a, i)).ok)
-            item = toml_to_dom_datum (d, 'i');
+            item = toml_to_dom_datum (d, 'i', status);
           else if ((d = toml_double_at (a, i)).ok)
-            item = toml_to_dom_datum (d, 'd');
+            item = toml_to_dom_datum (d, 'd', status);
           else
             item = ts_dom_new_null ();
         }
@@ -1041,7 +1179,7 @@ toml_to_dom_array (const toml_array_t *a)
 }
 
 static ts_dom_t *
-toml_to_dom_table (const toml_table_t *t)
+toml_to_dom_table (const toml_table_t *t, TS_Status *status)
 {
   ts_dom_t *obj = ts_dom_new_obj ();
   int n, i;
@@ -1060,14 +1198,20 @@ toml_to_dom_table (const toml_table_t *t)
       if (!key)
         continue;
       d = toml_string_in (t, key);
+      const char *raw = toml_raw_in (t, key);
+      if (!d.ok && raw && (*raw == '"' || *raw == '\''))
+        {
+          ts_dom_free (obj);
+          return NULL;
+        }
       if (d.ok)
-        v = toml_to_dom_datum (d, 's');
+        v = toml_to_dom_datum (d, 's', status);
       else if ((d = toml_bool_in (t, key)).ok)
-        v = toml_to_dom_datum (d, 'b');
+        v = toml_to_dom_datum (d, 'b', status);
       else if ((d = toml_int_in (t, key)).ok)
-        v = toml_to_dom_datum (d, 'i');
+        v = toml_to_dom_datum (d, 'i', status);
       else if ((d = toml_double_in (t, key)).ok)
-        v = toml_to_dom_datum (d, 'd');
+        v = toml_to_dom_datum (d, 'd', status);
       else
         v = ts_dom_new_null ();
       if (!v || ts_dom_obj_set (obj, key, v) != TS_OK)
@@ -1087,7 +1231,7 @@ toml_to_dom_table (const toml_table_t *t)
         toml_table_t *sub = toml_table_in (t, key);
         if (a)
           {
-            ts_dom_t *v = toml_to_dom_array (a);
+            ts_dom_t *v = toml_to_dom_array (a, status);
             if (!v || ts_dom_obj_set (obj, key, v) != TS_OK)
               {
                 ts_dom_free (obj);
@@ -1096,7 +1240,7 @@ toml_to_dom_table (const toml_table_t *t)
           }
         else if (sub)
           {
-            ts_dom_t *v = toml_to_dom_table (sub);
+            ts_dom_t *v = toml_to_dom_table (sub, status);
             if (!v || ts_dom_obj_set (obj, key, v) != TS_OK)
               {
                 ts_dom_free (obj);
@@ -1128,20 +1272,53 @@ ts_dom_parse_toml (const char *s, ts_dom_t **out, TS_Error *error)
       return TS_ERR_NOMEM;
     }
   errbuf[0] = '\0';
+  /* tomlc99 uses strtod internally; isolate its numeric locale per thread. */
+  locale_t numeric = newlocale (LC_NUMERIC_MASK, "C", (locale_t)0);
+  if (!numeric)
+    {
+      int saved = errno;
+      free (copy);
+      ts_error_set (error, TS_ERR_NOMEM, saved, 0,
+                    "cannot create numeric locale");
+      return TS_ERR_NOMEM;
+    }
+  locale_t previous = uselocale (numeric);
+  if (!previous)
+    {
+      int saved = errno;
+      free (copy);
+      freelocale (numeric);
+      ts_error_set (error, TS_ERR_SYSTEM, saved, 0,
+                    "cannot select numeric locale");
+      return TS_ERR_SYSTEM;
+    }
   root = toml_parse (copy, errbuf, sizeof errbuf);
   free (copy);
   if (!root)
     {
-      ts_error_set (error, TS_ERR_PARSE, 0, 0, "toml: %s",
+      uselocale (previous);
+      freelocale (numeric);
+      /* The pinned tomlc99 API exposes allocation failures through these
+         diagnostic prefixes rather than a typed status. Preserve its text. */
+      bool memory = !strcmp (errbuf, "out of memory")
+                    || !strncmp (errbuf, "ERROR: out of memory (", 22);
+      TS_Status status = memory ? TS_ERR_NOMEM : TS_ERR_PARSE;
+      ts_error_set (error, status, memory ? ENOMEM : 0, 0, "toml: %s",
                     errbuf[0] ? errbuf : "parse error");
-      return TS_ERR_PARSE;
+      return status;
     }
-  dom = toml_to_dom_table (root);
+  TS_Status conversion = TS_ERR_NOMEM;
+  dom = toml_to_dom_table (root, &conversion);
   toml_free (root);
+  uselocale (previous);
+  freelocale (numeric);
   if (!dom)
     {
-      ts_error_set (error, TS_ERR_NOMEM, ENOMEM, 0, "out of memory");
-      return TS_ERR_NOMEM;
+      ts_error_set (error, conversion, conversion == TS_ERR_NOMEM ? ENOMEM : 0,
+                    0,
+                    conversion == TS_ERR_NOMEM ? "out of memory"
+                                               : "toml: non-finite number");
+      return conversion;
     }
   *out = dom;
   return TS_OK;
@@ -1231,6 +1408,8 @@ ts_dom_kind_str (const ts_dom_t *d)
     case TS_DOM_NULL: return "null";
     case TS_DOM_BOOL: return "bool";
     case TS_DOM_INT: return "int";
+    case TS_DOM_FLOAT:
+      return "float";
     case TS_DOM_STR: return "string";
     case TS_DOM_ARR: return "array";
     case TS_DOM_OBJ: return "object";
@@ -1281,6 +1460,17 @@ dom_stringify_into (const ts_dom_t *d, ts_sbuf_t *b)
       return ts_sbuf_str (b, d->boolean ? "true" : "false");
     case TS_DOM_INT:
       return ts_sbuf_printf (b, "%lld", (long long) d->integer);
+    case TS_DOM_FLOAT:
+      {
+        TS_Value value = { .type = TS_FLOAT };
+        value.as.real = d->real;
+        char *text = NULL;
+        if (ts_value_to_string (&value, &text, NULL) != TS_OK)
+          return -1;
+        int result = ts_sbuf_str (b, text);
+        free (text);
+        return result;
+      }
     case TS_DOM_STR:
       return dom_emit_json_str (b, d->string);
     case TS_DOM_ARR:
@@ -1350,6 +1540,8 @@ ts_dom_to_value (const ts_dom_t *d, TS_Value *ret, TS_Error *error)
     case TS_DOM_INT:
       ts_std_ret_int (ret, d->integer);
       return TS_OK;
+    case TS_DOM_FLOAT:
+      return ts_value_make_float (ret, d->real);
     case TS_DOM_STR:
       return ts_std_ret_str (ret, d->string, error);
     case TS_DOM_ARR:

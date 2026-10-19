@@ -1,94 +1,71 @@
 # Chapter 17: Termscript Language
 
-For the complete user and embedding reference, see the
-[Termscript Manual](termscript.md).
+For the user and embedding reference, see the [Termscript Manual](termscript.md).
+The parser source is `termscript/Termscript.ng`, compiled by NovoParse/GLR into
+the common AST consumed by VM, C, QBE and Jiterati. The implementation status is
+recorded in `termscript/IMPLEMENTATION.md`; a proposed example is not a language
+specification or evidence that its application runs.
 
-Termscript is parsed from `termscript/Termscript.ng` by the vendored
-NovoParse/GLR pipeline.  This chapter describes the shipped executable syntax:
-the subset accepted by that grammar and lowered through the shared AST used by
-the VM, C, QBE, and Jiterati adapters.
+## Shipped syntax
 
-## Runnable subset
+- Statements are separated by newlines or semicolons; the last simple statement
+  may appear directly before `}` or EOF. `#` comments run to the end of a line.
+- `const`/`let` create immutable bindings; `var` and assignment create/update
+  mutable bindings. `+=`, `-=`, `*=`, `/=` and `%=` are supported.
+- Values include nil, booleans, checked int64, finite binary64 floats, NUL-free
+  strings and reference-counted native handles. Integers can be decimal or hex;
+  floats use decimal fractions/exponents. Strings have the supported C-like
+  escapes, including nonzero `\xHH`; embedded NUL is rejected.
+- Expressions support parentheses, checked arithmetic, comparisons, bitwise
+  operators/shifts and unary negation/not. `and`/`or` short-circuit and return an
+  operand. Arguments and operands evaluate left-to-right once.
+- Calls support `M:f(...)`, module dot calls, ordinary named functions and the
+  historical whitespace form. Parenthesized calls accept nested expressions and
+  trailing commas. `&name` retains the existing reference syntax.
+- `if`/`else` and `while` accept brace bodies or legacy `do`/`then`/`end` forms.
+  Top-level named functions support positional arguments, recursion and return.
+  Function frames see their own locals and top-level globals, not caller locals.
+  `main()` or `main(args)` runs after initialization; its nil/int result controls
+  exit status. There are no closures or mutable lexical captures yet.
+- `use` binds registered `std.*` modules. List and map literals use the existing
+  native adapters; they require the standard library, not an implicit new value
+  representation or collection method protocol.
+- Section declarations, aliases/defines, `config`, `lifetime` and the legacy flow
+  operators are implemented and covered by section/cleanup conformance tests.
+  `~>` observes failure, `->` follows the error observer and `=>` observes
+  success. Error observers **do not suppress the original failure**; they are not
+  the proposed `catch`/`?` semantics.
 
-Whitespace and comments are layout.  Comments start with `#` and run to the end
-of the line.  Runnable programs currently consist of these statements:
+Type annotations currently document intent; they are not statically enforced.
+For precedence and exact lifetime/operator contracts, consult the implementation
+status and grammar rather than inferring behavior from illustrative applications.
 
-- `const name = expr;`
-- `name = expr;`
-- `expr;`
-- `if expr do stmt* [else stmt*] end`
-- `while expr do stmt* end`
+## Runnable example
 
-Expressions currently include:
-
-- variables: `name`
-- references: `&name`
-- integers, strings, `true`, `false`, `nil`
-- fallback: `lhs or rhs` (`or` short-circuits)
-- native calls:
-  - whitespace form: `G:puts value`
-  - parenthesized form: `G:puts(value)`
-
-Parenthesized call arguments are scalar values or references separated by
-commas.  A trailing comma is accepted.  Empty calls use `M:f()`; whitespace-form
-calls with no arguments use `M:f;`.  Nested expression arguments are not yet part
-of the runnable subset, so write:
-
-```termscript
-const sum = G:add(40, 2);
-G:puts(sum);
-```
-
-not `G:puts(G:add(40, 2));`.
-
-String escapes are the C-like subset implemented by the parser: `\n`, `\t`,
-`\r`, `\"`, `\\`, `\e`, `\a`, `\b`, `\f`, `\v`, and nonzero `\xHH` bytes.
-NUL bytes are rejected.
-
-## Runnable examples
+The numeric conformance fixture tests this syntax across all four backends:
 
 ```termscript
-# Parenthesized calls.
-const Gmod = G:load("G") or G:die("G missing");
-const answer = G:add(40, 2);
-G:puts(answer);
-
-# Whitespace calls remain valid.
-G:puts "done";
+fn half(n: float) -> float { return n / 2.0 }
+var total = 0.0
+while total < 1.0 { total += 0.25 }
+print(half(5) + total)          # 3.5
 ```
 
-```termscript
-counter = 0;
-while G:lt(counter, 3) do
-  counter = G:add(counter, 1);
-  if G:eq(counter, 2) do
-    G:puts("two");
-  else
-    G:puts(counter);
-  end
-end
-```
+Floating arithmetic promotes numeric operands to binary64; integer-only division
+still returns an integer. Mixed comparisons do not round int64 values before
+comparing. NaN/infinity and division/remainder by zero fail explicitly. See the
+[0.4 migration guide](../termscript/MIGRATING-0.4.md) for numeric semantics and
+the required native ABI-v2 rebuild.
 
-## Illustrative examples
+## Implementation boundary
 
-The section-oriented files in `termscript/examples` are design inputs, not
-runnable conformance tests.  Constructs such as `@alias`, `@define`,
-`.interface`, `.section`, `lifetime`, `config`, `~>`, `->`, and `=>` remain
-reserved for the next semantic-IR stage.  They must not be described as working
-until parsing, ownership, cleanup, diagnostics, and all claimed backends are
-implemented together.
+Structs/enums/impl, pattern matching, first-class ranges/for loops, closures,
+generic type checking, interpolation, destructuring, collection indexing/method
+protocols, `?`/`catch`, defer and structured scheduling remain roadmap work.
+The large `coedit`, `flashbench`, `kmsterm`, `tmx` and `tsh` applications are
+illustrative, not runnable feature claims.
 
-## Backend contract
-
-The VM, C, QBE, and Jiterati adapters consume the same AST.
-
-- VM: default tree-walking execution.
-- C: emits real C control flow over `ts_rt_*`/`dt_rt_*`; it does not embed
-  Termscript source for runtime parsing.
-- QBE: emits a `ts_qbe_run` entry point with the same runtime-status convention;
-  the driver can assemble and link it on supported native platforms.
-- Jiterati: execution/JIT adapter, not a text emitter.  The tested slice JITs
-  checked i32 `G:add`, `G:sub`, `G:mul`, `G:div`, `G:mod`, `G:eq`, `G:lt`,
-  `G:gt`, `G:le`, and `G:ge`, while using runtime glue for control flow,
-  variables, strings, imports, and native module calls.  Unsupported
-  machine-code lowering fails explicitly.
+C and QBE emit actual control flow over the compiled-code runtime, without
+embedding source to parse at startup. Jiterati is a hybrid execution backend:
+checked i32 operations can be JIT-compiled, while floats and other operations
+use shared runtime helpers. This is not a whole-program or floating-point JIT.

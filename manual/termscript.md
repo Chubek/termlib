@@ -8,7 +8,7 @@ its statements that functions, infix expressions or script arguments are absent
 have been superseded by that status document.
 
 This manual describes the shipped Termscript 0.2 language, command-line driver,
-standard library, and native module ABI version 1. The implementation references
+standard library, and native module ABI version 2. The implementation references
 are [`Termscript.ng`](../termscript/Termscript.ng),
 [`termscript.h`](../termscript/termscript.h), and the native modules under
 [`termscript/stdlib/`](../termscript/stdlib/).
@@ -134,7 +134,8 @@ Native module I/O and other side effects are independent of this buffer.
 - Strings use double quotes. There is no interpolation.
 - `true`, `false`, and `nil` are literal values.
 
-Language keywords are `const`, `if`, `else`, `while`, `do`, `end`, and `or`.
+Language keywords include `const`, `let`, `var`, `fn`, `return`, `use`, `if`,
+`else`, `while`, `do`, `then`, `end`, `and`, `or`, `not`, `config` and `lifetime`.
 Use other identifiers for bindings and call names.
 
 Supported string escapes are `\n`, `\t`, `\r`, `\"`, `\\`, `\e`, `\a`, `\b`,
@@ -147,6 +148,7 @@ embedded NULs are not supported. Literal Unicode text may be written as UTF-8.
 | nil | Missing/empty result | Always |
 | bool | Boolean | `false` |
 | int | Signed 64-bit integer | 0 |
+| float | Finite IEEE-754 binary64 | Positive or negative zero |
 | string | Owned byte string | Empty |
 | handle | Reference-counted native object or module | Never |
 
@@ -160,8 +162,10 @@ status API or explicitly replace the binding when appropriate.
 Constants prevent rebinding; a native object held by a constant can still be
 mutated through its module's methods.
 
-Bindings share one VM scope, including bindings created inside `if`, `while`,
-and imported files. There is no block-local scope. Reassigning an existing
+Top-level bindings share VM scope, including imported files. Named functions
+have their own locals and can read top-level globals, not caller locals.
+Branches/loops share their enclosing function's frame; there is no block-local
+scope or closure capture. Reassigning an existing
 constant fails with `TS_ERR_INVAL`. Reading an unbound name fails with
 `TS_ERR_NOTFOUND`.
 
@@ -176,16 +180,17 @@ a module handle, usually returned by `G:load`. Function names and receiver names
 are identifiers. A native module name such as `"std.json"` is a string passed
 to `G:load`, not a dotted receiver expression.
 
-Arguments may be integers, strings, literal booleans/nil, variable names, or
-`&name`. Arguments are separated by commas; a trailing comma is accepted.
+Parenthesized arguments may be nested expressions, including integers, floats,
+strings, literal booleans/nil, calls, operators, collection literals and `&name`.
+Arguments are separated by commas; a trailing comma is accepted.
 Use `M:f()` for a zero-argument call.
 
 `name` and `&name` currently read the same stored value. `&` does not expose a
 C address or permit a callback to rebind the variable. Strings are copied when
 values are copied; native handles retain aliases to the same object.
 
-Nested calls, parenthesized general expressions, and `or` inside an argument
-list are not supported. Bind intermediate results first:
+Nested calls, parenthesized general expressions and `or` inside an argument
+list are supported. Intermediate bindings remain useful for readability:
 
 **Runnable:**
 
@@ -194,7 +199,7 @@ const sum = G:add(20, 22);
 G:puts(&sum);
 ```
 
-The unsupported equivalent is `G:puts(G:add(20, 22));`.
+The equivalent `G:puts(G:add(20, 22));` is also runnable.
 Arithmetic and comparisons are module functions, not infix operators.
 
 ### 3.4 Fallback expressions
@@ -265,26 +270,33 @@ no standard-library registration:
 | `G:import_path(directory)` | Append a copied search directory to this VM; return nil |
 | `G:puts(value)` | Append the value's spelling and a newline to captured output; return nil |
 | `G:die(value)` | Stop execution with `TS_ERR_CANCELLED` and the value's spelling as the diagnostic |
-| `G:add(a, b)` | Integer addition |
-| `G:sub(a, b)` | Integer subtraction |
-| `G:mul(a, b)` | Integer multiplication |
-| `G:div(a, b)` | Integer division, truncating toward zero |
-| `G:mod(a, b)` | Integer remainder, following C remainder semantics |
-| `G:eq(a, b)` | Same-type equality; different types compare false |
-| `G:lt(a, b)`, `G:gt(a, b)` | Strict integer comparisons |
-| `G:le(a, b)`, `G:ge(a, b)` | Non-strict integer comparisons |
+| `G:add(a, b)` | Numeric addition, or concatenation of two strings |
+| `G:sub(a, b)` | Numeric subtraction |
+| `G:mul(a, b)` | Numeric multiplication |
+| `G:div(a, b)` | Integer division for two ints; otherwise binary64 division |
+| `G:mod(a, b)` | Integer remainder or floating `fmod`; sign follows dividend |
+| `G:eq(a, b)` | Numeric int/float equality; other different types compare false |
+| `G:lt(a, b)`, `G:gt(a, b)` | Strict numeric comparisons |
+| `G:le(a, b)`, `G:ge(a, b)` | Non-strict numeric comparisons |
+| `G:float(value)` | Explicit binary64 conversion from number or decimal string |
+| `G:int(value)` | Truncate an in-range numeric value toward zero |
 | `G:not(value)` | Boolean negation of truthiness |
 | `G:len(text)` | Byte length of a string |
 | `G:concat(a, b)` | Concatenate the printable spellings of two values |
-| `G:type(value)` | `"nil"`, `"bool"`, `"int"`, `"string"`, or `"handle"` |
+| `G:type(value)` | `"nil"`, `"bool"`, `"int"`, `"float"`, `"string"`, or `"handle"` |
 
-Arithmetic requires two integers. Overflow, division by zero, and remainder by
+Numeric arithmetic requires numeric operands. Integer-only operations keep
+checked int64 behavior; a floating operand promotes arithmetic to binary64.
+Mixed comparisons do not lose int64 precision. Overflow, division by zero, and remainder by
 zero fail with `TS_ERR_PARSE`. Arity/type violations fail with `TS_ERR_INVAL`.
 `G:eq` compares strings by contents, nil with nil as equal, and handles by
 handle identity. Separate loads of the same module create separate handles.
 
-Printable spellings are `nil`, `true`/`false`, decimal integers, strings verbatim,
+Printable spellings are `nil`, `true`/`false`, decimal integers, round-trippable
+17-significant-digit floats (retaining `.0` where needed), strings verbatim,
 and native handle descriptions. `G:puts` is not a general binary-output API.
+See [migration to 0.4 / ABI v2](../termscript/MIGRATING-0.4.md) for finite-number,
+locale, native-module rebuild and JSON/TOML/YAML changes.
 
 ## 5. Modules and imports
 
@@ -565,7 +577,11 @@ int main(void)
 
 ### 9.3 ABI and ownership contracts
 
-ABI version 1 replaces the old unversioned sentinel-terminated module layout.
+ABI version 2 retains v1's size-tagged, counted module layout and adds finite
+binary64 values (`TS_FLOAT`, `as.real`). ABI-v1 modules must be rebuilt and must
+handle or reject floats explicitly; changing only the version field of an old
+binary is unsafe. The original v1 migration replaced the unversioned
+sentinel-terminated layout.
 Rebuild native extensions against the current header. `TS_Func` callback
 signatures and `TS_FuncDef.userdata` remain unchanged.
 

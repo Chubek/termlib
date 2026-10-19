@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf (stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit (1); } } while (0)
@@ -264,6 +265,23 @@ tty_tests (void)
 }
 
 static void
+wait_pty_event (const TS_Value *child, TS_Value *event)
+{
+  struct timespec start, now;
+  CHECK (clock_gettime (CLOCK_MONOTONIC, &start) == 0);
+  for (;;)
+    {
+      OK ("std.pty", "wait_event", event, 1, *child);
+      if (event->type != TS_NIL) return;
+      CHECK (clock_gettime (CLOCK_MONOTONIC, &now) == 0);
+      int64_t elapsed = (int64_t)(now.tv_sec - start.tv_sec) * 1000000000 + now.tv_nsec - start.tv_nsec;
+      CHECK (elapsed < INT64_C(2000000000));
+      struct timespec pause = {0, 1000000};
+      while (nanosleep (&pause, &pause) < 0 && errno == EINTR) {}
+    }
+}
+
+static void
 pty_tests (void)
 {
   TS_Value child = {0}, v = {0}, event = {0};
@@ -277,20 +295,17 @@ pty_tests (void)
   OK ("std.pty", "spawn", &child, 1, S ("printf hi; exit 7"));
   OK ("std.pty", "read", &v, 1, child); text_is (&v, "hi");
   OK ("std.pty", "read", &v, 1, child); CHECK (v.type == TS_NIL);
-  for (int i = 0; i < 100; i++)
-    { OK ("std.pty", "wait_event", &event, 1, child); if (event.type != TS_NIL) break; usleep (1000); }
+  wait_pty_event (&child, &event);
   CHECK (event.type == TS_HANDLE);
   OK ("std.json", "get", &v, 2, event, S ("code")); CHECK (v.as.integer == 7);
   OK ("std.pty", "close", &v, 1, child); OK ("std.pty", "close", &v, 1, child); ts_value_free (&child);
   OK ("std.pty", "spawn", &child, 1, S ("kill -STOP $$; exit 0"));
-  for (int i = 0; i < 100; i++)
-    { OK ("std.pty", "wait_event", &event, 1, child); if (event.type != TS_NIL) break; usleep (1000); }
+  wait_pty_event (&child, &event);
   CHECK (event.type == TS_HANDLE);
   OK ("std.json", "get", &v, 2, event, S ("state")); text_is (&v, "stopped");
   OK ("std.pty", "close", &v, 1, child); ts_value_free (&child);
   OK ("std.pty", "spawn", &child, 1, S ("kill -TERM $$"));
-  for (int i = 0; i < 100; i++)
-    { OK ("std.pty", "wait_event", &event, 1, child); if (event.type != TS_NIL) break; usleep (1000); }
+  wait_pty_event (&child, &event);
   OK ("std.json", "get", &v, 2, event, S ("signal")); CHECK (v.as.integer == SIGTERM);
   ts_value_free (&child); ts_value_free (&v); ts_value_free (&event);
 }

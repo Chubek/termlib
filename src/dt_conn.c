@@ -1,11 +1,12 @@
 /* dt_conn.c -- transport-neutral messages and local/remote connections. */
 #include "dt_internal.h"
 
+#include <arpa/inet.h>
+#include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
-#include <arpa/inet.h>
 
 /* ---------------- messages and envelopes ---------------- */
 
@@ -29,13 +30,20 @@ dt_message_type_string (DT_MessageType type)
 {
   switch (type)
     {
-    case DT_MESSAGE_DATA: return "DATA";
-    case DT_MESSAGE_RESIZE: return "RESIZE";
-    case DT_MESSAGE_CLOSE: return "CLOSE";
-    case DT_MESSAGE_ERROR: return "ERROR";
-    case DT_MESSAGE_HEARTBEAT: return "HEARTBEAT";
-    case DT_MESSAGE_AUTH: return "AUTH";
-    default: return "UNKNOWN";
+    case DT_MESSAGE_DATA:
+      return "DATA";
+    case DT_MESSAGE_RESIZE:
+      return "RESIZE";
+    case DT_MESSAGE_CLOSE:
+      return "CLOSE";
+    case DT_MESSAGE_ERROR:
+      return "ERROR";
+    case DT_MESSAGE_HEARTBEAT:
+      return "HEARTBEAT";
+    case DT_MESSAGE_AUTH:
+      return "AUTH";
+    default:
+      return "UNKNOWN";
     }
 }
 
@@ -44,11 +52,16 @@ dt_conn_state_string (DT_ConnState state)
 {
   switch (state)
     {
-    case DT_CONN_CLOSED: return "CLOSED";
-    case DT_CONN_CONNECTING: return "CONNECTING";
-    case DT_CONN_OPEN: return "OPEN";
-    case DT_CONN_SHUTDOWN: return "SHUTDOWN";
-    default: return "UNKNOWN";
+    case DT_CONN_CLOSED:
+      return "CLOSED";
+    case DT_CONN_CONNECTING:
+      return "CONNECTING";
+    case DT_CONN_OPEN:
+      return "OPEN";
+    case DT_CONN_SHUTDOWN:
+      return "SHUTDOWN";
+    default:
+      return "UNKNOWN";
     }
 }
 
@@ -57,7 +70,7 @@ dt_message_new (DT_MessageType type, const void *data, size_t size,
                 DT_Error *error)
 {
   DT_Message *m;
-  if ((unsigned) type > (unsigned) DT_MESSAGE_AUTH)
+  if ((unsigned)type > (unsigned)DT_MESSAGE_AUTH)
     {
       dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0, "bad message type");
       return NULL;
@@ -235,9 +248,23 @@ dt_envelope_take_message (DT_Envelope *envelope)
 
 #define DT_FRAME_OVERHEAD (8u + 1u + 4u) /* msgid + type + crc. */
 
+typedef struct
+{
+  uint8_t *data;
+  size_t size, sent;
+} DT_FrameWriter;
+
+static void
+dt_frame_writer_reset (DT_FrameWriter *writer)
+{
+  free (writer->data);
+  memset (writer, 0, sizeof *writer);
+}
+
 static DT_Status
-dt_frame_send (int fd, uint64_t id, const DT_Message *msg, int timeout_ms,
-               const volatile int *cancelled, DT_Error *error)
+dt_frame_send (int fd, DT_FrameWriter *writer, uint64_t id,
+               const DT_Message *msg, int timeout_ms,
+               const atomic_int *cancelled, DT_Error *error)
 {
   uint8_t hdr[4 + 8 + 1];
   uint8_t crcbuf[4];
@@ -258,22 +285,43 @@ dt_frame_send (int fd, uint64_t id, const DT_Message *msg, int timeout_ms,
       dt_err_set (error, DT_ERR_LIMIT, 0, 0, "message too large");
       return DT_ERR_LIMIT;
     }
-  body_len = (uint32_t) (8 + 1 + payload_len + 4);
+  body_len = (uint32_t)(8 + 1 + payload_len + 4);
   dt_put_u32be (hdr, body_len);
   dt_put_u64be (hdr + 4, id);
-  hdr[12] = (uint8_t) msg->type;
+  hdr[12] = (uint8_t)msg->type;
   crc = dt_crc32_update (0xFFFFFFFFu, hdr + 4, 9);
   if (payload_len)
     crc = dt_crc32_update (crc, payload, payload_len);
   crc ^= 0xFFFFFFFFu;
   dt_put_u32be (crcbuf, crc);
-  rc = dt_stream_write_full (fd, hdr, sizeof hdr, timeout_ms, cancelled,
-                             &errn);
-  if (rc == 0 && payload_len)
-    rc = dt_stream_write_full (fd, payload, payload_len, timeout_ms,
-                               cancelled, &errn);
-  if (rc == 0)
-    rc = dt_stream_write_full (fd, crcbuf, 4, timeout_ms, cancelled, &errn);
+  if (writer->data)
+    {
+      if (writer->size != sizeof hdr + payload_len + 4
+          || memcmp (writer->data, hdr, sizeof hdr)
+          || (payload_len
+              && memcmp (writer->data + sizeof hdr, payload, payload_len)))
+        {
+          dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0,
+                      "retry the pending envelope before sending another");
+          return DT_ERR_INVALID_ARGUMENT;
+        }
+    }
+  else
+    {
+      writer->size = sizeof hdr + payload_len + 4;
+      writer->data = malloc (writer->size);
+      if (!writer->data)
+        {
+          dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
+          return DT_ERR_NO_MEMORY;
+        }
+      memcpy (writer->data, hdr, sizeof hdr);
+      if (payload_len)
+        memcpy (writer->data + sizeof hdr, payload, payload_len);
+      memcpy (writer->data + sizeof hdr + payload_len, crcbuf, 4);
+    }
+  rc = dt_stream_write_progress (fd, writer->data, writer->size, &writer->sent,
+                                 timeout_ms, cancelled, &errn);
   if (rc != 0)
     {
       if (rc == DT_ERR_EOF)
@@ -282,155 +330,143 @@ dt_frame_send (int fd, uint64_t id, const DT_Message *msg, int timeout_ms,
         dt_err_set (error, DT_ERR_TIMEOUT, 0, 0, "send timeout");
       else if (rc == DT_ERR_CANCELLED)
         dt_err_set (error, DT_ERR_CANCELLED, 0, 0, "send cancelled");
+      else if (rc == DT_ERR_WOULD_BLOCK)
+        dt_err_set (error, DT_ERR_WOULD_BLOCK, 0, 0, "send would block");
       else
         dt_err_set (error, DT_ERR_SYSTEM, errn, 0, "send failed");
-      return (DT_Status) rc;
+      return (DT_Status)rc;
     }
+  dt_frame_writer_reset (writer);
   return DT_OK;
 }
 
-static DT_Status
-dt_frame_receive (int fd, uint64_t *id, DT_Message **msg, int timeout_ms,
-                  const volatile int *cancelled, DT_Error *error)
+/* A connection retains its partial frame across timeout/would-block returns.
+ */
+typedef struct
 {
-  uint8_t hdr[4];
-  uint8_t mbuf[9];
-  uint8_t *payload = NULL;
-  uint8_t crcbuf[4];
+  uint8_t header[4];
+  size_t header_got;
+  uint8_t *body;
+  size_t body_got;
+} DT_FrameReader;
+
+static void
+dt_frame_reset (DT_FrameReader *reader)
+{
+  free (reader->body);
+  memset (reader, 0, sizeof *reader);
+}
+
+static DT_Status
+dt_frame_receive (int fd, DT_FrameReader *reader, uint64_t *id,
+                  DT_Message **msg, int timeout_ms,
+                  const atomic_int *cancelled, DT_Error *error)
+{
   uint32_t body_len, payload_len;
-  uint32_t crc_file, crc_calc;
   int rc, errn = 0;
   unsigned mtype;
-  rc = dt_stream_read_full (fd, hdr, sizeof hdr, timeout_ms, cancelled,
-                            &errn);
+  DT_Message *m;
+  int64_t deadline = dt_timeout_deadline (timeout_ms);
+  rc = dt_stream_read_progress (fd, reader->header, sizeof reader->header,
+                                &reader->header_got, timeout_ms, cancelled,
+                                &errn);
   if (rc != 0)
+    goto read_error;
+  body_len = dt_get_u32be (reader->header);
+  if (body_len < DT_FRAME_OVERHEAD
+      || body_len > DT_FRAME_OVERHEAD + DT_CONN_MAX_MESSAGE)
     {
-      if (rc == DT_ERR_EOF)
-        dt_err_set (error, DT_ERR_EOF, 0, 0, "peer closed connection");
-      else if (rc == DT_ERR_TIMEOUT)
-        dt_err_set (error, DT_ERR_TIMEOUT, 0, 0, "receive timeout");
-      else if (rc == DT_ERR_CANCELLED)
-        dt_err_set (error, DT_ERR_CANCELLED, 0, 0, "receive cancelled");
-      else if (rc == DT_ERR_WOULD_BLOCK)
-        dt_err_set (error, DT_ERR_WOULD_BLOCK, 0, 0, "no message ready");
-      else
-        dt_err_set (error, DT_ERR_SYSTEM, errn, 0, "receive failed");
-      return (DT_Status) rc;
+      DT_Status st
+          = body_len < DT_FRAME_OVERHEAD ? DT_ERR_PROTOCOL : DT_ERR_LIMIT;
+      dt_err_set (error, st, 0, 0, "bad frame length %u", body_len);
+      return st;
     }
-  body_len = dt_get_u32be (hdr);
-  if (body_len < DT_FRAME_OVERHEAD ||
-      body_len > DT_FRAME_OVERHEAD + DT_CONN_MAX_MESSAGE)
+  if (!reader->body)
     {
-      dt_err_set (error, body_len < DT_FRAME_OVERHEAD ? DT_ERR_PROTOCOL :
-                                                       DT_ERR_LIMIT,
-                  0, 0, "bad frame length %u", body_len);
-      return body_len < DT_FRAME_OVERHEAD ? DT_ERR_PROTOCOL : DT_ERR_LIMIT;
-    }
-  payload_len = body_len - DT_FRAME_OVERHEAD;
-  rc = dt_stream_read_full (fd, mbuf, sizeof mbuf, timeout_ms, cancelled,
-                            &errn);
-  if (rc != 0)
-    {
-      dt_err_set (error, rc == DT_ERR_EOF ? DT_ERR_EOF : DT_ERR_PROTOCOL,
-                  errn, 0, "truncated frame header");
-      return rc == DT_ERR_EOF ? DT_ERR_EOF : DT_ERR_PROTOCOL;
-    }
-  mtype = mbuf[8];
-  if (mtype > (unsigned) DT_MESSAGE_AUTH)
-    {
-      /* Drain the frame body to keep the stream in sync, then report. */
-      size_t left = payload_len + 4;
-      uint8_t tmp[1024];
-      while (left)
-        {
-          size_t want = left < sizeof tmp ? left : sizeof tmp;
-          int dr = dt_stream_read_full (fd, tmp, want, timeout_ms,
-                                        cancelled, &errn);
-          if (dr != 0)
-            break;
-          left -= want;
-        }
-      dt_err_set (error, DT_ERR_PROTOCOL, 0, 0,
-                  "unsupported message type %u", mtype);
-      return DT_ERR_PROTOCOL;
-    }
-  if (payload_len)
-    {
-      payload = malloc (payload_len);
-      if (!payload)
+      reader->body = malloc (body_len);
+      if (!reader->body)
         {
           dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
           return DT_ERR_NO_MEMORY;
         }
-      rc = dt_stream_read_full (fd, payload, payload_len, timeout_ms,
+    }
+  rc = dt_stream_read_progress (fd, reader->body, body_len, &reader->body_got,
+                                dt_timeout_remaining (timeout_ms, deadline),
                                 cancelled, &errn);
-      if (rc != 0)
-        {
-          free (payload);
-          dt_err_set (error, DT_ERR_PROTOCOL, errn, 0, "truncated frame");
-          return DT_ERR_PROTOCOL;
-        }
-    }
-  rc = dt_stream_read_full (fd, crcbuf, 4, timeout_ms, cancelled, &errn);
+  if (rc == DT_ERR_WOULD_BLOCK && timeout_ms > 0)
+    rc = DT_ERR_TIMEOUT;
   if (rc != 0)
+    goto read_error;
+  payload_len = body_len - DT_FRAME_OVERHEAD;
+  mtype = reader->body[8];
+  if (mtype > (unsigned)DT_MESSAGE_AUTH)
     {
-      free (payload);
-      dt_err_set (error, DT_ERR_PROTOCOL, errn, 0, "truncated frame crc");
+      dt_err_set (error, DT_ERR_PROTOCOL, 0, 0, "unsupported message type %u",
+                  mtype);
+      dt_frame_reset (reader);
       return DT_ERR_PROTOCOL;
     }
-  crc_file = dt_get_u32be (crcbuf);
-  crc_calc = dt_crc32_update (0xFFFFFFFFu, mbuf, sizeof mbuf);
-  if (payload_len)
-    crc_calc = dt_crc32_update (crc_calc, payload, payload_len);
-  crc_calc ^= 0xFFFFFFFFu;
-  if (crc_calc != crc_file)
+  if (dt_crc32 (reader->body, body_len - 4)
+      != dt_get_u32be (reader->body + body_len - 4))
     {
-      free (payload);
       dt_err_set (error, DT_ERR_PROTOCOL, 0, 0, "frame checksum mismatch");
+      dt_frame_reset (reader);
       return DT_ERR_PROTOCOL;
     }
-  {
-    DT_Message *m = calloc (1, sizeof *m);
-    if (!m)
-      {
-        free (payload);
-        dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
-        return DT_ERR_NO_MEMORY;
-      }
-    m->type = (DT_MessageType) mtype;
-    if (mtype == DT_MESSAGE_RESIZE)
-      {
-        if (payload_len != 4)
-          {
-            free (payload);
-            free (m);
-            dt_err_set (error, DT_ERR_PROTOCOL, 0, 0, "bad resize frame");
-            return DT_ERR_PROTOCOL;
-          }
-        m->rows = dt_get_u16le (payload);
-        m->columns = dt_get_u16le (payload + 2);
-        free (payload);
-      }
-    else
-      {
-        m->data = payload;
-        m->len = payload_len;
-      }
-    *id = dt_get_u64be (mbuf);
-    *msg = m;
-  }
+  if (mtype == DT_MESSAGE_RESIZE && payload_len != 4)
+    {
+      dt_err_set (error, DT_ERR_PROTOCOL, 0, 0, "bad resize frame");
+      dt_frame_reset (reader);
+      return DT_ERR_PROTOCOL;
+    }
+  m = calloc (1, sizeof *m);
+  if (!m)
+    {
+      dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
+      return DT_ERR_NO_MEMORY;
+    }
+  *id = dt_get_u64be (reader->body);
+  m->type = (DT_MessageType)mtype;
+  if (mtype == DT_MESSAGE_RESIZE)
+    {
+      m->rows = dt_get_u16le (reader->body + 9);
+      m->columns = dt_get_u16le (reader->body + 11);
+    }
+  else if (payload_len)
+    {
+      memmove (reader->body, reader->body + 9, payload_len);
+      m->data = reader->body;
+      m->len = payload_len;
+      reader->body = NULL; /* Transfer the allocation to the message. */
+    }
+  dt_frame_reset (reader);
+  *msg = m;
   return DT_OK;
+
+read_error:
+  if (rc == DT_ERR_EOF && reader->header_got)
+    rc = DT_ERR_PROTOCOL;
+  dt_err_set (error, (DT_Status)rc, errn, 0, "%s",
+              rc == DT_ERR_PROTOCOL      ? "truncated frame"
+              : rc == DT_ERR_EOF         ? "peer closed connection"
+              : rc == DT_ERR_TIMEOUT     ? "receive timeout"
+              : rc == DT_ERR_CANCELLED   ? "receive cancelled"
+              : rc == DT_ERR_WOULD_BLOCK ? "no complete message ready"
+                                         : "receive failed");
+  return (DT_Status)rc;
 }
 
 /* ---------------- local connections ---------------- */
 
 struct DT_LocalConn
 {
+  DT_FrameReader reader;
+  DT_FrameWriter writer;
   int fd;
   bool own;
   int rto_ms;
   int wto_ms;
-  volatile int cancelled;
+  atomic_int cancelled;
   DT_ConnState state;
 };
 
@@ -439,7 +475,7 @@ dt_localconn_options_init (DT_LocalConnOptions *options)
 {
   if (!options)
     return;
-  options->struct_size = (uint32_t) sizeof *options;
+  options->struct_size = (uint32_t)sizeof *options;
   options->fd = -1;
   options->take_ownership = false;
   options->nonblocking = false;
@@ -465,6 +501,7 @@ dt_localconn_open (const DT_LocalConnOptions *options, DT_Error *error)
       return NULL;
     }
   c->fd = options->fd;
+  atomic_init (&c->cancelled, 0);
   c->own = options->take_ownership;
   c->rto_ms = options->read_timeout_ms;
   c->wto_ms = options->write_timeout_ms;
@@ -493,6 +530,8 @@ dt_localconn_close (DT_LocalConn *connection)
   if (!connection)
     return;
   connection->state = DT_CONN_CLOSED;
+  dt_frame_reset (&connection->reader);
+  dt_frame_writer_reset (&connection->writer);
   if (connection->own)
     close (connection->fd);
   free (connection);
@@ -515,7 +554,7 @@ dt_localconn_cancel (DT_LocalConn *connection)
 {
   if (!connection)
     return;
-  connection->cancelled = 1;
+  atomic_store (&connection->cancelled, 1);
   shutdown (connection->fd, SHUT_RDWR); /* Wake blocked poll/recv. */
 }
 
@@ -534,8 +573,9 @@ dt_localconn_send (DT_LocalConn *connection, const DT_Envelope *envelope,
       dt_err_set (error, DT_ERR_IO, 0, 0, "connection is not open");
       return DT_ERR_IO;
     }
-  st = dt_frame_send (connection->fd, envelope->id, envelope->msg,
-                      connection->wto_ms, &connection->cancelled, error);
+  st = dt_frame_send (connection->fd, &connection->writer, envelope->id,
+                      envelope->msg, connection->wto_ms,
+                      &connection->cancelled, error);
   if (st == DT_OK && envelope->msg->type == DT_MESSAGE_CLOSE)
     connection->state = DT_CONN_SHUTDOWN;
   if (st == DT_ERR_EOF)
@@ -548,6 +588,7 @@ dt_localconn_receive (DT_LocalConn *connection, DT_Envelope **envelope,
                       DT_Error *error)
 {
   DT_Status st;
+  DT_Envelope *e;
   uint64_t id = 0;
   DT_Message *msg = NULL;
   if (!connection || !envelope)
@@ -561,28 +602,31 @@ dt_localconn_receive (DT_LocalConn *connection, DT_Envelope **envelope,
       dt_err_set (error, DT_ERR_IO, 0, 0, "connection is not open");
       return DT_ERR_IO;
     }
-  st = dt_frame_receive (connection->fd, &id, &msg, connection->rto_ms,
-                         &connection->cancelled, error);
+  /* Allocate the envelope before consuming the frame, so OOM is retryable. */
+  e = malloc (sizeof *e);
+  if (!e)
+    {
+      dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
+      return DT_ERR_NO_MEMORY;
+    }
+  st = dt_frame_receive (connection->fd, &connection->reader, &id, &msg,
+                         connection->rto_ms, &connection->cancelled, error);
   if (st != DT_OK)
     {
-      if (st == DT_ERR_EOF)
-        connection->state = DT_CONN_SHUTDOWN;
+      free (e);
+      if (st == DT_ERR_EOF || st == DT_ERR_LIMIT
+          || (st == DT_ERR_PROTOCOL && connection->reader.header_got))
+        {
+          connection->state = DT_CONN_SHUTDOWN;
+          dt_frame_reset (&connection->reader);
+        }
       return st;
     }
-  {
-    DT_Envelope *e = malloc (sizeof *e);
-    if (!e)
-      {
-        dt_message_free (msg);
-        dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
-        return DT_ERR_NO_MEMORY;
-      }
-    e->id = id;
-    e->msg = msg;
-    if (msg->type == DT_MESSAGE_CLOSE)
-      connection->state = DT_CONN_SHUTDOWN;
-    *envelope = e;
-  }
+  e->id = id;
+  e->msg = msg;
+  if (msg->type == DT_MESSAGE_CLOSE)
+    connection->state = DT_CONN_SHUTDOWN;
+  *envelope = e;
   return DT_OK;
 }
 
@@ -612,10 +656,12 @@ dt_localconn_ping (DT_LocalConn *connection, uint64_t message_id,
 
 struct DT_RemoteConn
 {
+  DT_FrameReader reader;
+  DT_FrameWriter writer;
   int fd;
   int rto_ms;
   int wto_ms;
-  volatile int cancelled;
+  atomic_int cancelled;
   DT_ConnState state;
   char *host;
   uint16_t port;
@@ -626,7 +672,7 @@ dt_remoteconn_options_init (DT_RemoteConnOptions *options)
 {
   if (!options)
     return;
-  options->struct_size = (uint32_t) sizeof *options;
+  options->struct_size = (uint32_t)sizeof *options;
   options->host = NULL;
   options->port = 0;
   options->connect_timeout_ms = 5000;
@@ -639,10 +685,11 @@ dt_remoteconn_options_init (DT_RemoteConnOptions *options)
 
 static int
 dt_connect_poll (int fd, const struct sockaddr *addr, socklen_t addrlen,
-                 unsigned int timeout_ms, const volatile int *cancelled)
+                 unsigned int timeout_ms, const atomic_int *cancelled)
 {
-  int flags, errn = 0;
-  unsigned int waited = 0;
+  int flags;
+  int timeout = timeout_ms ? (int)timeout_ms : -1;
+  int64_t deadline = dt_timeout_deadline (timeout);
   flags = fcntl (fd, F_GETFL);
   if (flags < 0)
     return -1;
@@ -650,8 +697,7 @@ dt_connect_poll (int fd, const struct sockaddr *addr, socklen_t addrlen,
     return -1;
   if (connect (fd, addr, addrlen) == 0)
     {
-      fcntl (fd, F_SETFL, flags);
-      return 0;
+      return fcntl (fd, F_SETFL, flags);
     }
   if (errno != EINPROGRESS)
     return -1;
@@ -661,23 +707,23 @@ dt_connect_poll (int fd, const struct sockaddr *addr, socklen_t addrlen,
       int slice, r;
       socklen_t optlen;
       int soerr = 0;
-      if (cancelled && *cancelled)
+      if (cancelled && atomic_load (cancelled))
         {
           errno = ECANCELED;
           return -1;
         }
-      slice = 100;
-      if (timeout_ms && waited + (unsigned) slice > timeout_ms)
-        slice = (int) (timeout_ms - waited);
-      if (timeout_ms && waited >= timeout_ms)
+      slice = dt_timeout_remaining (timeout, deadline);
+      if (slice == 0)
         {
           errno = ETIMEDOUT;
           return -1;
         }
+      if (slice < 0 || slice > 100)
+        slice = 100;
       pfd.fd = fd;
       pfd.events = POLLOUT;
       pfd.revents = 0;
-      r = poll (&pfd, 1, timeout_ms ? slice : 100);
+      r = poll (&pfd, 1, slice);
       if (r < 0)
         {
           if (errno == EINTR)
@@ -686,9 +732,6 @@ dt_connect_poll (int fd, const struct sockaddr *addr, socklen_t addrlen,
         }
       if (r == 0)
         {
-          if (!timeout_ms)
-            continue;
-          waited += (unsigned) slice;
           continue;
         }
       optlen = sizeof soerr;
@@ -697,12 +740,9 @@ dt_connect_poll (int fd, const struct sockaddr *addr, socklen_t addrlen,
       if (soerr)
         {
           errno = soerr;
-          errn = errno;
-          (void) errn;
           return -1;
         }
-      fcntl (fd, F_SETFL, flags);
-      return 0;
+      return fcntl (fd, F_SETFL, flags);
     }
 }
 
@@ -714,11 +754,31 @@ dt_remoteconn_open (const DT_RemoteConnOptions *options, DT_Error *error)
   char portbuf[16];
   int fd = -1;
   int wto;
-  if (!options || !options->host || !options->port)
+  if (!options || !options->host || !options->port
+      || options->connect_timeout_ms > INT_MAX)
     {
       dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0,
-                  "host and port are required");
+                  "host, port and a connect timeout <= INT_MAX are required");
       return NULL;
+    }
+  /* Tokens are one printable ASCII field, never additional HELLO lines or
+     fields. Validate before connecting so invalid credentials leave no side
+     effects and cannot leak into diagnostics. */
+  if (options->auth_token)
+    {
+      const unsigned char *p = (const unsigned char *)options->auth_token;
+      size_t len = 0;
+      while (*p)
+        {
+          if (*p <= 0x20 || *p >= 0x7f
+              || ++len > 1024 - sizeof "DT/1.0 HELLO proto=1 token=\n")
+            {
+              dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0,
+                          "invalid authentication token");
+              return NULL;
+            }
+          p++;
+        }
     }
   c = calloc (1, sizeof *c);
   if (!c)
@@ -727,6 +787,7 @@ dt_remoteconn_open (const DT_RemoteConnOptions *options, DT_Error *error)
       return NULL;
     }
   c->fd = -1;
+  atomic_init (&c->cancelled, 0);
   c->state = DT_CONN_CONNECTING;
   c->rto_ms = options->read_timeout_ms;
   c->wto_ms = options->write_timeout_ms;
@@ -758,8 +819,8 @@ dt_remoteconn_open (const DT_RemoteConnOptions *options, DT_Error *error)
         setsockopt (fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
       }
       if (dt_connect_poll (fd, ai->ai_addr, ai->ai_addrlen,
-                           options->connect_timeout_ms,
-                           &c->cancelled) == 0)
+                           options->connect_timeout_ms, &c->cancelled)
+          == 0)
         break;
       {
         int e = errno;
@@ -774,8 +835,7 @@ dt_remoteconn_open (const DT_RemoteConnOptions *options, DT_Error *error)
         if (!ai->ai_next)
           {
             freeaddrinfo (list);
-            dt_err_set (error, e == ETIMEDOUT ? DT_ERR_TIMEOUT :
-                                                DT_ERR_SYSTEM,
+            dt_err_set (error, e == ETIMEDOUT ? DT_ERR_TIMEOUT : DT_ERR_SYSTEM,
                         e, 0, "connect to %s:%u failed", options->host,
                         options->port);
             goto fail;
@@ -797,44 +857,48 @@ dt_remoteconn_open (const DT_RemoteConnOptions *options, DT_Error *error)
     char reply[256];
     DT_Status st;
     if (token)
-      hlen = snprintf (hello, sizeof hello,
-                       "DT/1.0 HELLO proto=1 token=%s\n", token);
+      hlen = snprintf (hello, sizeof hello, "DT/1.0 HELLO proto=1 token=%s\n",
+                       token);
     else
       hlen = snprintf (hello, sizeof hello, "DT/1.0 HELLO proto=1\n");
-    if (hlen < 0 || (size_t) hlen >= sizeof hello)
+    if (hlen < 0 || (size_t)hlen >= sizeof hello)
       {
         dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0, "token too long");
         goto fail;
       }
-    wto = options->connect_timeout_ms ? (int) options->connect_timeout_ms :
-                                        -1;
+    wto = options->connect_timeout_ms ? (int)options->connect_timeout_ms : -1;
     {
-      int rc = dt_stream_write_full (c->fd, hello, (size_t) hlen, wto,
-                                     &c->cancelled, NULL);
+      int errn = 0;
+      int rc = dt_stream_write_full (c->fd, hello, (size_t)hlen, wto,
+                                     &c->cancelled, &errn);
       if (rc != 0)
         {
-          dt_err_set (error, rc == DT_ERR_CANCELLED ? DT_ERR_CANCELLED :
-                                                      DT_ERR_IO,
-                      0, 0, "handshake write failed");
+          dt_err_set (error, (DT_Status)rc, errn, 0, "handshake write failed");
           goto fail;
         }
     }
-    st = dt_stream_read_line (c->fd, reply, sizeof reply, wto,
-                              &c->cancelled, error);
+    st = dt_stream_read_line (c->fd, reply, sizeof reply, wto, &c->cancelled,
+                              error);
     if (st != DT_OK)
       goto fail;
-    if (strncmp (reply, "DT/1.0 OK", 9) == 0)
+    /* read_line requires a complete, bounded, NUL-free line. */
+    {
+      size_t len = strlen (reply);
+      reply[--len] = '\0'; /* Final newline is guaranteed by read_line. */
+      if (len && reply[len - 1] == '\r')
+        reply[len - 1] = '\0';
+    }
+    if (strcmp (reply, "DT/1.0 OK") == 0)
       {
         c->state = DT_CONN_OPEN;
         return c;
       }
-    if (strncmp (reply, "DT/1.0 DENIED", 13) == 0)
+    if (strcmp (reply, "DT/1.0 DENIED") == 0)
       {
-        dt_err_set (error, DT_ERR_AUTH, 0, 0,
-                    "remote rejected credentials");
+        dt_err_set (error, DT_ERR_AUTH, 0, 0, "remote rejected credentials");
         goto fail;
       }
-    if (strncmp (reply, "DT/1.0 VERSION-MISMATCH", 23) == 0)
+    if (strcmp (reply, "DT/1.0 VERSION-MISMATCH") == 0)
       {
         dt_err_set (error, DT_ERR_PROTOCOL, 0, 0,
                     "remote protocol version mismatch");
@@ -861,6 +925,8 @@ dt_remoteconn_close (DT_RemoteConn *connection)
   if (!connection)
     return;
   connection->state = DT_CONN_CLOSED;
+  dt_frame_reset (&connection->reader);
+  dt_frame_writer_reset (&connection->writer);
   if (connection->fd >= 0)
     close (connection->fd);
   free (connection->host);
@@ -884,7 +950,7 @@ dt_remoteconn_cancel (DT_RemoteConn *connection)
 {
   if (!connection)
     return;
-  connection->cancelled = 1;
+  atomic_store (&connection->cancelled, 1);
   if (connection->fd >= 0)
     shutdown (connection->fd, SHUT_RDWR);
 }
@@ -904,8 +970,9 @@ dt_remoteconn_send (DT_RemoteConn *connection, const DT_Envelope *envelope,
       dt_err_set (error, DT_ERR_IO, 0, 0, "connection is not open");
       return DT_ERR_IO;
     }
-  st = dt_frame_send (connection->fd, envelope->id, envelope->msg,
-                      connection->wto_ms, &connection->cancelled, error);
+  st = dt_frame_send (connection->fd, &connection->writer, envelope->id,
+                      envelope->msg, connection->wto_ms,
+                      &connection->cancelled, error);
   if (st == DT_OK && envelope->msg->type == DT_MESSAGE_CLOSE)
     connection->state = DT_CONN_SHUTDOWN;
   if (st == DT_ERR_EOF)
@@ -918,6 +985,7 @@ dt_remoteconn_receive (DT_RemoteConn *connection, DT_Envelope **envelope,
                        DT_Error *error)
 {
   DT_Status st;
+  DT_Envelope *e;
   uint64_t id = 0;
   DT_Message *msg = NULL;
   if (!connection || !envelope)
@@ -931,28 +999,30 @@ dt_remoteconn_receive (DT_RemoteConn *connection, DT_Envelope **envelope,
       dt_err_set (error, DT_ERR_IO, 0, 0, "connection is not open");
       return DT_ERR_IO;
     }
-  st = dt_frame_receive (connection->fd, &id, &msg, connection->rto_ms,
-                         &connection->cancelled, error);
+  e = malloc (sizeof *e);
+  if (!e)
+    {
+      dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
+      return DT_ERR_NO_MEMORY;
+    }
+  st = dt_frame_receive (connection->fd, &connection->reader, &id, &msg,
+                         connection->rto_ms, &connection->cancelled, error);
   if (st != DT_OK)
     {
-      if (st == DT_ERR_EOF)
-        connection->state = DT_CONN_SHUTDOWN;
+      free (e);
+      if (st == DT_ERR_EOF || st == DT_ERR_LIMIT
+          || (st == DT_ERR_PROTOCOL && connection->reader.header_got))
+        {
+          connection->state = DT_CONN_SHUTDOWN;
+          dt_frame_reset (&connection->reader);
+        }
       return st;
     }
-  {
-    DT_Envelope *e = malloc (sizeof *e);
-    if (!e)
-      {
-        dt_message_free (msg);
-        dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
-        return DT_ERR_NO_MEMORY;
-      }
-    e->id = id;
-    e->msg = msg;
-    if (msg->type == DT_MESSAGE_CLOSE)
-      connection->state = DT_CONN_SHUTDOWN;
-    *envelope = e;
-  }
+  e->id = id;
+  e->msg = msg;
+  if (msg->type == DT_MESSAGE_CLOSE)
+    connection->state = DT_CONN_SHUTDOWN;
+  *envelope = e;
   return DT_OK;
 }
 

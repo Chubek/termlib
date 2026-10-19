@@ -12,7 +12,7 @@ background threads are started.
 | `std.memory` | `alloc(size)`/`new(size)`, `len`, `get(handle,index)`, `set(handle,index,byte)`, `fill(handle,byte)`, `close` |
 | `std.persian_script` | `normalize(text)`, `search_fold(text)` |
 | `std.set` | `new`, `add`, `has`, `remove`, `len`, `clear`, `values` |
-| `std.stdio` | `write(text)`, `eprint(text)`, `flush()`, `flush_error()`, `read_line()` |
+| `std.stdio` | `write(text)`, `write_hex(hex)`, `eprint(text)`, `flush()`, `flush_error()`, `read_line()` |
 | `std.datagram` | `bind(port,address?)`, `fd`, `port`, `send_to(handle,address,port,text)`, `recv(handle,limit?)`, `close` |
 | `std.procfs` | `open(root?="/proc")`, `read(view,path,byte_limit?)`, `list(view,path?,entry_limit?)`, `close(view)` |
 | `std.sysfs` | Same read-only view API, default root `/sys` |
@@ -21,6 +21,15 @@ background threads are started.
 | `std.font_shape` | `open(path,index?)`, `match(pattern?)`, `has(font,text_or_scalar)`, `units_per_em(font)`, `shape(font,text,direction?,language?)` |
 | `std.shm` | `create(name,size)`, `open(name)`, `unlink(name)`, `close(handle)`, `len(handle)`, `fd(handle)`, `get(handle,index)`, `set(handle,index,byte)` |
 | `std.mqueue` | `available()`, `create(name,capacity?=10,message_size?=8192)`, `open(name)`, `unlink(name)`, `close(handle)`, `len(handle)`, `message_size(handle)`, `send(handle,text,priority?=0)`, `receive(handle)` |
+
+`std.stdio.write_hex(hex)` is an explicit binary stdout boundary: it accepts
+upper/lowercase digit pairs, validates the entire string before writing, and
+returns the number of decoded bytes. Empty input writes nothing. Odd lengths,
+non-hex characters and non-string arguments fail with `TS_ERR_INVAL`; more than
+16 MiB of decoded output fails with `TS_ERR_LIMIT`. Writes use libc buffering;
+call `flush()` to detect deferred stream errors. An I/O error may follow partial
+output and must not be blindly retried. This adds binary output without claiming
+Termscript text strings can themselves carry embedded NULs.
 
 ## Incremental input and font shaping
 

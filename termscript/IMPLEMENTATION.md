@@ -92,7 +92,7 @@ redefined to guess the meaning of the new examples' `catch`/`?` constructs.
 ## Remaining work
 
 The applications still require structs/enums/impl, match/patterns, ranges/for,
-closures, generics, floats, interpolation/raw strings, destructuring, collection
+closures, generics, interpolation/raw strings, destructuring, collection
 indexing/method protocols, optional/result propagation, defer, scheduling and
 substantial additional library APIs. Those are **not implemented**. Do not
 describe parsing a simple type annotation as a type checker.
@@ -361,3 +361,194 @@ persistent/full-text indexing, channel routing, or a secure session transport.
 CRC is not authentication; untrusted networks still require authenticated,
 encrypted transport plus application authorization and payload validation.
 Multiplexing requires POSIX; non-Linux runtime behavior remains unverified.
+
+## Core transport audit (2026-10-18)
+
+This pass hardens Termlib's existing connection layer; it does not implement
+additional Termscript syntax or claim the illustrative applications now run.
+
+- `src/dt_conn.c` shares owned, bounded incremental frame state between local
+  and remote transports. Partial receives and backpressured sends survive
+  timeout/would-block retries. Retry sends must match the pending envelope.
+  Receive allocation failures retain the frame for retry. Truncation is distinct
+  from orderly EOF; invalid lengths stop the connection without desynchronizing it.
+- `src/dt_util.c` uses monotonic deadlines, atomic cancellation flags and
+  `pthread_once` CRC initialization. Linux socket writes suppress SIGPIPE;
+  pipe/platform signal-policy limitations remain documented in the connection
+  manual. Cancellation wakes pipe readers through bounded polling as well.
+- Remote opens reject injected token fields and malformed/incomplete handshake
+  replies. No wire format, public ABI layout or dependency snapshot changed.
+  This is still raw TCP, not authenticated encryption or a sandbox.
+- `tests/test_connections.c` adds all frame split/truncation positions, binary
+  payloads, backpressure/retry, slow-peer deadlines, socket/pipe cancellation,
+  concurrent first-use recording checksums and failed-open tests. Its ELF
+  allocation-injection variant checks failed receive/send retries. Pending-buffer
+  abandonment is covered under leak detection. `CMakeLists.txt`, `termlib.h`,
+  connection manual chapters and the README quick-start were updated.
+
+Validation: the native Debug build succeeded. The baseline passed 45/46 tests;
+the companion sweep timed out at 120 seconds. After these changes, all 47 tests
+excluding that sweep passed; the sweep again exceeded CTest's limit but passed
+when invoked separately through `cmake -P tests/termscript_companions.cmake`.
+The timeout was not increased to hide the outstanding parser-performance issue.
+Both connection tests passed ASan/UBSan with leak detection. GCC `-fanalyzer`
+with `-Wall -Wextra -Werror`, GNU clang-format checks and `git diff --check`
+passed. The corrected `termscript/examples/core.tsc` quick-start ran and printed
+`120` and `0`. No new external APIs were assumed or dependencies downloaded.
+
+At the end of that pass, remaining work included parser performance/resource
+budgets, the language features listed above, and the placeholder replay
+exporters addressed in the follow-up below. DNS remains synchronous; blocking pipe writers
+and platforms without MSG_NOSIGNAL require the documented caller policies.
+Non-Linux runtime behavior and real remote deployment were not verified.
+
+## Parser reuse and completed replay emitters (2026-10-18 follow-up)
+
+The default native Debug suite now passes **53/53 tests**, including the
+previously timing-out companion sweep. Its 120-second timeout was not increased.
+The final full run took about 43 seconds, including that sweep; separate runs
+measured roughly 41–47 seconds while sharing the host with sanitizer builds.
+
+The source of repeated import overhead was rebuilding the same GLR parse table
+on every parse. `source/parser.c` now uses NovoParse's documented reusable-parser
+contract. `source/runtime.c` owns one lazily created parser per VM, shared by its
+execution and C/QBE import lowering; `backends/QBE.inc` carries the same VM context.
+Parser state is released on VM destruction, including after failed parses.
+Syntax-only calls without a VM remain temporary. Parse/result allocations are
+not shared between VMs, and the existing front-end lock remains in place. The
+last copied source/result may remain in the parser until its next parse or VM
+destruction. Grammar and operator semantics did not change. The deeply nested
+X11 example still takes roughly 22 seconds by itself; this change removes
+repeated grammar construction, not all worst-case GLR complexity.
+
+`src/dt_replay_emit.inc` replaces the no-op emitters behind
+`dt_replayer_compile`. WASM now exports correctly sized memory and real host
+event dispatch, JavaScript retains exact timestamps and schedules against a
+monotonic clock, WebGPU uploads bounded storage buffers with checked consumer
+lifetimes, and p5.js/Manim advance incremental UTF-8 text previews. Termscript
+exports write only output events, binary-exactly, using the new
+`stdlib/stdio/stdio.c` `write_hex` boundary rather than newline-adding `G:puts`.
+The common text builder now fails atomically on allocation/size overflow instead
+of silently returning truncated source. Export counts, aggregate payload and
+source sizes are bounded. See `../manual/13-replay.md` for precise host contracts.
+
+New regression files are `tests/test_termscript_parser_reuse.c`,
+`tests/test_termscript_stdio.c`, `tests/test_replay_export.c`,
+`tests/replay_exports.js` and `tests/replay_exports.py`. They cover independent
+VMs on four threads, recovery after parse errors, source ownership, VM/C/QBE/JIT
+byte parity, every exporter including empty recordings, WAT assembly and actual
+WASM execution, timing, invalid hex, GPU failure cleanup and allocation injection.
+The existing C++ export assertion was updated for the corrected byte-output API.
+`CMakeLists.txt`, `termlib.h`, replay manual and `stdlib/new-modules.md` document
+and register the additions. No vendored dependency or pinned snapshot changed.
+
+Validation commands included the full native CMake build/CTest suite and an
+ASan/UBSan stdlib build with native/Jiterati disabled. All **six focused sanitizer
+tests** passed with leak detection: connection normal/allocation, export
+normal/allocation, parser reuse and stdio. Runtime export tests executed generated
+Node programs and Binaryen-assembled WAT, plus generated Termscript across all
+four enabled backends. GPU, p5.js and Manim behavior was tested with isolated
+fixtures; real hardware/display rendering and a real Manim installation were
+not available and are not claimed as verified.
+
+Strict C11 warnings-as-errors checks passed for the parser/runtime and new code.
+Clang's analyzer and GCC `-fanalyzer` checks passed for the exporter and stdio
+adapter after factoring checked buffer reservation from copying. Formatting,
+JavaScript/Python syntax and `git diff --check` checks also passed.
+
+This completes the identified replay stubs and removes the default-suite timeout,
+not the entire proposed language roadmap. Structs/enums, pattern matching,
+closures, generic type checking and the richer illustrative application APIs
+remain unsupported as described above. Floating-point support was added in the
+0.4 follow-up below. WebGPU requires a caller-supplied
+renderer; text previews do not implement ANSI terminal emulation. Hard internal
+GLR resource budgets, non-Linux runtime portability and authenticated/encrypted
+remote transport also remain separate work. Replaying untrusted output may emit
+terminal control sequences; generated programs are not a sandbox.
+
+## 0.4 numeric language and native ABI v2 (2026-10-19)
+
+The user-approved breaking rollout starts with finite binary64 values, rather
+than pretending to implement the entire proposed language in one patch. Native
+`TS_Module` descriptors now require ABI v2; ABI-v1 modules are rejected before
+invocation. Read `MIGRATING-0.4.md` before rebuilding extensions or C++ consumers.
+The older `DT_TermModule` adapter is unversioned and still requires its callers
+to review native argument types explicitly.
+
+### Architecture and changed files
+
+- `Termscript.ng` and `source/parser.c` accept decimal fraction/exponent literals
+  in expressions and legacy whitespace calls. Conversion is checked in the front
+  end with byte-offset diagnostics. `source/runtime.c` represents them as explicit
+  `N_LIT_FLOAT` AST nodes; section cloning in `source/sections_front.inc` preserves
+  their values. C and `backends/QBE.inc` emit constant bit patterns, not decimal
+  strings to parse at run time. Jiterati uses the common value/runtime path.
+- `source/numeric.inc` defines checked finite constructors, locale-independent
+  decimal conversion/rendering, mixed arithmetic, exact int64/binary64 ordering,
+  explicit int/float conversions and selected-operand min/max. Integer-only
+  arithmetic and integer-required native APIs keep their old semantics.
+- `include/TSC-API.h`, `include/Termscript.hpp`, `../termlib.h`,
+  `../termlib.hpp` and `../src/dt_termscript.c` carry the new scalar through both
+  embedding APIs and C++ wrappers. Invalid native return values are rejected;
+  failed conversions preserve invalid-value errors instead of reporting OOM.
+  The Termlib C++ value wrapper now frees its own heap storage as well as its
+  payload, and `script_vm::set` no longer leaks the consumed wrapper allocation.
+  The version string is immutable rather than a shared mutable formatting buffer.
+- `stdlib/common/dom.c`, `common/ts_std_common.h` and the JSON/TOML/YAML adapters
+  retain finite fractions through lookup, cloning and stringify. Strict JSON
+  number checks and finite TOML conversion remove unsafe float-to-int casts.
+  TOML runs under a temporary per-thread C numeric locale. Parse OOMs are not
+  disguised as nil/null, JSON/YAML append failures do not truncate text, and
+  supplementary JSON Unicode escapes round-trip correctly. The pinned tomlc99
+  diagnostic prefixes used for memory-error classification were inspected in
+  the actual dependency; no external API was guessed or vendored code changed.
+- `CMakeLists.txt` supplies the POSIX math-library dependency, installs migration
+  documentation and registers new tests. The language manual, stdlib README and
+  migration guide describe breaking behavior and remaining limitations.
+
+### Regression coverage
+
+`tests/test_termscript_numeric.c` covers constructors, failed conversions,
+subnormals/limits, negative zero, locale restoration, ABI-v1 rejection, invalid
+native results, VM recovery, literal diagnostics and literal-only AOT emission.
+Its stdlib variant executes `tests/termscript_numeric.tsc`, which also checks
+collection values, exact comparisons above 2^53/at int64 bounds, format round-trips,
+malformed numbers, nested non-finite rejection and Unicode escape handling.
+`tests/termscript_numeric_sections.tsc` checks section cloning;
+`tests/termscript_numeric_failures.cmake` checks failed execution/compilation across
+the enabled backends and rejects sanitizer reports even on expected-error paths.
+`tests/test_termscript_numeric_alloc.c` injects every observed malloc/calloc/
+realloc/strdup/strndup failure through numeric/quoted-string JSON/TOML/YAML paths
+and checks recovery. Existing C++ tests cover both wrappers and the DT trampoline.
+
+The broad run exposed an existing child-test race: `test_termscript_stdlib.c`
+expected a PTY STOP event within 100 one-millisecond polls. It passed five
+isolated reruns. The fixture now uses a two-second monotonic event deadline;
+its event/state assertions and overall CTest timeout are unchanged.
+
+### Validation and remaining work
+
+The pre-change baseline passed 53/53 tests. The final native build succeeded and
+CTest passed 59/59 in 41.54 seconds (`cmake --build /tmp/opencode/termlib-audit
+--parallel 6`; `ctest --test-dir /tmp/opencode/termlib-audit --output-on-failure
+--parallel 4`). Focused ASan/UBSan/leak checks passed 5/5 API/stdlib/allocation/C++
+tests and 2/2 generated-C section/error-path tests. The no-stdlib/native-disabled
+build passed 3/3 numeric tests; an installed-header C++ consumer compiled and ran.
+Strict C11 warning-as-error syntax checks passed for runtime, parser, DOM and DT
+adapter, and `git diff --check` passed. Required comma-locale checks passed 2/2.
+A private
+German locale was generated from installed locale definitions under
+`/tmp/opencode`; `TS_TEST_REQUIRE_COMMA=1` prevents optional locale checks from
+silently skipping that run. No system locales were installed or dependencies
+downloaded. The initial sanitizer numeric test exceeded its 30-second limit
+because it rebuilt the GLR grammar for each independent syntax assertion; those
+assertions now use the tested per-VM compiler cache, with a separate syntax-only
+offset check retained. Its timeout was not increased.
+
+This is a verified numeric/ABI foundation, **not completion of the full proposed
+language**. Structs/enums/impl, matching, ranges/for, closures, generics/static
+typing, interpolation, destructuring, indexing/method protocols, result/error
+propagation, defer and structured scheduling still require implementation. Type
+annotations are not enforced. Strings remain NUL-free; the JIT is not a native
+floating-point JIT. Non-Linux execution and unusual floating-point trap/rounding
+modes remain unverified. Native extensions are trusted code, not a sandbox.

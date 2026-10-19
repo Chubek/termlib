@@ -115,7 +115,8 @@ typedef enum
   TS_DOM_INT,
   TS_DOM_STR,
   TS_DOM_ARR,
-  TS_DOM_OBJ
+  TS_DOM_OBJ,
+  TS_DOM_FLOAT
 } ts_dom_kind_t;
 
 typedef struct ts_dom ts_dom_t;
@@ -123,6 +124,7 @@ typedef struct ts_dom ts_dom_t;
 ts_dom_t *ts_dom_new_null (void);
 ts_dom_t *ts_dom_new_bool (bool b);
 ts_dom_t *ts_dom_new_int (int64_t i);
+ts_dom_t *ts_dom_new_float (double number);
 ts_dom_t *ts_dom_new_str (const char *s);
 ts_dom_t *ts_dom_new_arr (void);
 ts_dom_t *ts_dom_new_obj (void);

@@ -63,13 +63,13 @@ extern "C"
 #endif
 
 #define TS_VERSION_MAJOR 0
-#define TS_VERSION_MINOR 3
+#define TS_VERSION_MINOR 4
 #define TS_VERSION_PATCH 0
 
 #define TS_ERROR_MSG_SIZE 256
 #define TS_MAX_MODULES 128
 #define TS_MAX_MODULE_FUNCS 4096
-#define TS_NATIVE_ABI_VERSION 1u
+#define TS_NATIVE_ABI_VERSION 2u
 #define TS_MAX_SOURCE_SIZE (1u << 20) /* Includes the trailing NUL. */
 #define TS_MAX_SYNTAX_NESTING 128u
 #define TS_MAX_EXPR_OPERATORS 256u
@@ -135,7 +135,8 @@ extern "C"
     TS_BOOL,
     TS_INT,
     TS_STRING,
-    TS_HANDLE /* Opaque native data, see ts_value_make_handle. */
+    TS_HANDLE, /* Opaque native data, see ts_value_make_handle. */
+    TS_FLOAT   /* Finite IEEE-754 binary64; ABI v2. */
   } TS_ValueType;
 
   typedef struct TS_Handle TS_Handle; /* Opaque; refcounted internally. */
@@ -148,6 +149,7 @@ extern "C"
     {
       bool boolean;
       int64_t integer;
+      double real;
       char *string;      /* Owned when type == TS_STRING. */
       TS_Handle *handle; /* Owned (refcounted) when TS_HANDLE. */
     } as;
@@ -165,6 +167,11 @@ extern "C"
   void ts_value_make_nil (TS_Value *v);
   void ts_value_make_bool (TS_Value *v, bool b);
   void ts_value_make_int (TS_Value *v, int64_t i);
+  /* Reject NaN/infinity without changing v. Decimal conversion is independent
+     of the process locale and requires the entire string (no whitespace). */
+  TS_Status ts_value_make_float (TS_Value *v, double number);
+  TS_Status ts_value_parse_float (TS_Value *v, const char *text,
+                                  TS_Error *error);
   TS_Status ts_value_make_string (TS_Value *v, const char *s);
   typedef void (*TS_HandleFree) (void *ptr);
   TS_Status ts_value_make_handle (TS_Value *v, void *ptr,
@@ -178,14 +185,15 @@ extern "C"
   void ts_value_free (TS_Value *value); /* NULL-safe. */
   TS_Status ts_value_copy (TS_Value *dst, const TS_Value *src);
   bool ts_value_truthy (const TS_Value *v);
-  /* Heap-allocated spelling ("nil", "true", "42", strings verbatim,
+  /* Heap-allocated spelling ("nil", "true", "42", "1.5", strings verbatim,
    * "<handle desc>"); caller frees with free(). */
   TS_Status ts_value_to_string (const TS_Value *value, char **out,
                                 TS_Error *error);
 
-  /* Native extension ABI, version 1 (replaces the unversioned sentinel ABI).
-   * Rebuild native extensions against this header. Callback signatures are
-   * unchanged; function tables now contain exactly func_count real entries.
+  /* Native extension ABI, version 2. Rebuild v1 extensions against this header
+   * and handle/reject TS_FLOAT explicitly. Never relabel an old binary's ABI.
+   * Callback signatures and the counted descriptor layout are unchanged;
+   * function tables contain exactly func_count real entries.
    * No sentinel entry is required or accepted within that count. */
   typedef struct TS_VM TS_VM;
 

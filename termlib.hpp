@@ -2648,7 +2648,8 @@ enum class term_value_type
   boolean = DT_TERM_BOOL,
   integer = DT_TERM_INT,
   text = DT_TERM_STRING,
-  handle = DT_TERM_HANDLE
+  handle = DT_TERM_HANDLE,
+  floating = DT_TERM_FLOAT
 };
 
 inline const char *
@@ -2662,6 +2663,8 @@ to_string (term_value_type type) noexcept
       return "boolean";
     case term_value_type::integer:
       return "integer";
+    case term_value_type::floating:
+      return "float";
     case term_value_type::text:
       return "text";
     case term_value_type::handle:
@@ -2670,20 +2673,32 @@ to_string (term_value_type type) noexcept
   return "unknown";
 }
 
-/* A Termscript value.  Text values own their buffer; handles are
+namespace detail
+{
+inline void
+destroy_term_value (DT_TermValue *value) noexcept
+{
+  dt_termvalue_free (value);
+  std::free (value);
+}
+}
+
+/* A Termscript value owns heap storage and its payload; handles are
    retained references released by the library. */
 class term_value final
     : private detail::unique_handle<term_value, DT_TermValue *,
-                                    dt_termvalue_free>
+                                    detail::destroy_term_value>
 {
   using handle_base = detail::unique_handle<term_value, DT_TermValue *,
-                                            dt_termvalue_free>;
+                                            detail::destroy_term_value>;
 
   friend class script_vm;
 
 public:
   term_value () noexcept : handle_base (raw_storage ()) {}
-  /* Adopt an existing value (transferred reference). */
+  /* Adopt malloc/calloc-owned value storage and its payload; never pass a
+     stack value or borrowed storage. release() transfers both to the caller.
+   */
   explicit term_value (DT_TermValue *raw) noexcept : handle_base (raw) {}
 
   static term_value nil () noexcept { return term_value (); }
@@ -2698,6 +2713,22 @@ public:
     return term_value (make (value));
   }
 
+  static term_value
+  floating (double value)
+  {
+    DT_Error diagnostic{};
+    DT_TermValue *owned = raw_storage ();
+    if (!owned)
+      detail::fail (DT_ERR_NO_MEMORY, diagnostic);
+    const auto state = dt_rt_mkfloat (owned, value, &diagnostic);
+    if (state != DT_OK)
+      {
+        std::free (owned);
+        detail::fail (state, diagnostic);
+      }
+    return term_value (owned);
+  }
+
   /* Copies the text. */
   static term_value text (std::string_view value)
   {
@@ -2707,7 +2738,10 @@ public:
         = dt_rt_mkstring (raw, detail::c_string (value, "value").c_str (),
                           &error_raw);
     if (state != DT_OK)
-      detail::fail (state, error_raw);
+      {
+        detail::destroy_term_value (raw);
+        detail::fail (state, error_raw);
+      }
     return term_value (raw);
   }
 
@@ -2734,6 +2768,13 @@ public:
   {
     const DT_TermValue *raw = native_handle ();
     return raw != nullptr && raw->type == DT_TERM_INT ? raw->as.integer : 0;
+  }
+
+  double
+  as_float () const noexcept
+  {
+    const DT_TermValue *raw = native_handle ();
+    return raw && raw->type == DT_TERM_FLOAT ? raw->as.real : 0.0;
   }
 
   std::string_view as_text () const noexcept
@@ -2960,7 +3001,8 @@ public:
         value.reset ();
         detail::fail (state, error_raw);
       }
-    value.release (); /* Adopted by the VM. */
+    value
+        .reset (); /* The VM adopted the payload copy, not its heap wrapper. */
   }
 
   /* Read a global variable. */

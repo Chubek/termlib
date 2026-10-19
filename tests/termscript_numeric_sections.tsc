@@ -1,0 +1,14 @@
+# Runnable: floating literals survive backend-independent section cloning.
+.interface
+    R:Declare:Section(:Config)
+    R:Declare:Section(:Program)
+.end
+.section Config
+    config Ratio := 1.25;
+.end
+.section Program
+    G:OnStartup(:Config);
+    if Ratio != 1.25 then R:Exit(:EXIT_FAILURE); end
+    G:puts("numeric sections OK");
+    R:Exit(:EXIT_SUCCESS);
+.end

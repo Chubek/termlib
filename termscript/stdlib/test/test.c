@@ -96,6 +96,8 @@ test_eq (const TS_Value *a, const TS_Value *b)
       return a->as.boolean == b->as.boolean;
     case TS_INT:
       return a->as.integer == b->as.integer;
+    case TS_FLOAT:
+      return a->as.real == b->as.real;
     case TS_STRING:
       return strcmp (a->as.string ? a->as.string : "",
                      b->as.string ? b->as.string : "") == 0;

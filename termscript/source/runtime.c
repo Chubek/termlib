@@ -27,12 +27,16 @@
  * data).  Falsiness: nil, false, 0 and "" are false; all else true.
  * `or` short-circuits.  G:die halts with TS_ERR_CANCELLED.
  * Execution is bounded by TS_MAX_STEPS (infinite loops fail). */
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include "termscript.h"
 
 #include <ctype.h>
 #include <errno.h>
+#include <float.h>
+#include <locale.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -41,6 +45,10 @@
 
 #define TS_MAX_STEPS (1u << 20)
 #define TS_MAX_FILE (1u << 20)
+
+_Static_assert (sizeof (double) == 8 && DBL_MANT_DIG == 53
+                    && DBL_MAX_EXP == 1024,
+                "Termscript floats require IEEE-754 binary64");
 
 #if defined(TERMSCRIPT_HAVE_JITERATI)
 int ts_jiterati_available (void);
@@ -264,6 +272,8 @@ struct TS_VM
   size_t olen, ocap;
   unsigned long steps;
   char *compiled;
+  void *
+      syntax_parser; /* Owned reusable NovoParse parser; private to this VM. */
   /* Import machinery (see ts_vm_import): ordered search directories plus
    * a stack of in-progress import paths for cycle detection. */
   char **spaths;
@@ -455,6 +465,9 @@ ts_value_copy (TS_Value *dst, const TS_Value *src)
 {
   if (!dst || !src)
     return TS_ERR_INVAL;
+  if ((unsigned)src->type > TS_FLOAT
+      || (src->type == TS_FLOAT && !isfinite (src->as.real)))
+    return TS_ERR_INVAL;
   if (dst == src)
     return TS_OK;
   dst->type = src->type;
@@ -508,6 +521,8 @@ ts_value_make_int (TS_Value *v, int64_t i)
   v->type = TS_INT;
   v->as.integer = i;
 }
+
+#include "numeric.inc"
 
 TS_Status
 ts_value_make_string (TS_Value *v, const char *s)
@@ -571,6 +586,8 @@ ts_value_truthy (const TS_Value *v)
       return v->as.boolean;
     case TS_INT:
       return v->as.integer != 0;
+    case TS_FLOAT:
+      return isfinite (v->as.real) && v->as.real != 0.0;
     case TS_STRING:
       return v->as.string && v->as.string[0] != '\0';
     case TS_HANDLE:
@@ -601,6 +618,15 @@ ts_value_to_string (const TS_Value *value, char **out, TS_Error *error)
       snprintf (tmp, sizeof tmp, "%lld", (long long)value->as.integer);
       s = tmp;
       break;
+    case TS_FLOAT:
+      {
+        TS_Status st
+            = ts_format_float (value->as.real, tmp, sizeof tmp, error);
+        if (st != TS_OK)
+          return st;
+        s = tmp;
+        break;
+      }
     case TS_STRING:
       s = value->as.string ? value->as.string : "";
       break;
@@ -608,6 +634,9 @@ ts_value_to_string (const TS_Value *value, char **out, TS_Error *error)
       s = value->as.handle ? ((TS_Handle *)value->as.handle)->desc
                            : "<handle>";
       break;
+    default:
+      ts_error_set (error, TS_ERR_INVAL, 0, 0, "invalid value type");
+      return TS_ERR_INVAL;
     }
   *out = strdup (s);
   if (!*out)
@@ -666,6 +695,9 @@ term_arith (TS_VM *vm, const TS_Value *argv, size_t argc, TS_Value *ret,
       ret->as.string = s;
       return TS_OK;
     }
+  if (ts_is_number (argv) && ts_is_number (argv + 1)
+      && (argv[0].type == TS_FLOAT || argv[1].type == TS_FLOAT))
+    return ts_float_arith (argv, ret, error, op);
   if (!term_is_int (&argv[0]) || !term_is_int (&argv[1]))
     {
       ts_error_set (error, TS_ERR_INVAL, 0, 0, "ints required");
@@ -767,6 +799,20 @@ term_cmp (TS_VM *vm, const TS_Value *argv, size_t argc, TS_Value *ret,
   bool b = false;
   if (ts_check_argc (vm, argv, argc, 2, error) != TS_OK)
     return TS_ERR_INVAL;
+  if (ts_is_number (argv) && ts_is_number (argv + 1))
+    {
+      int order;
+      TS_Status st = ts_compare_numbers (argv, argv + 1, &order, error);
+      if (st != TS_OK)
+        return st;
+      b = op == 'e'   ? order == 0
+          : op == 'l' ? order < 0
+          : op == 'g' ? order > 0
+          : op == 'L' ? order <= 0
+                      : order >= 0;
+      ts_value_make_bool (ret, b);
+      return TS_OK;
+    }
   if (op == 'e')
     {
       if (argv[0].type != argv[1].type)
@@ -920,6 +966,9 @@ g_type (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc, TS_Value *ret,
       break;
     case TS_INT:
       t = "int";
+      break;
+    case TS_FLOAT:
+      t = "float";
       break;
     case TS_STRING:
       t = "string";
@@ -1187,6 +1236,14 @@ ts_collection_call (TS_VM *vm, const TS_Module *module, const char *name,
       return TS_ERR_NOTFOUND;
     }
   TS_Status st = f->func (vm, f->userdata, argv, argc, ret, error);
+  if (st == TS_OK
+      && ((unsigned)ret->type > TS_FLOAT
+          || (ret->type == TS_FLOAT && !isfinite (ret->as.real))))
+    {
+      st = TS_ERR_INVAL;
+      ts_error_set (error, st, 0, 0,
+                    "native callback returned an invalid value");
+    }
   if (st != TS_OK)
     ts_value_free (ret);
   return st;
@@ -1315,6 +1372,22 @@ g_integer_op (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *r,
   intptr_t op = (intptr_t)ud;
   if (ts_check_argc (vm, a, n, op == 5 ? 1 : 2, e) != TS_OK)
     return TS_ERR_INVAL;
+  if (op == 5 && a[0].type == TS_FLOAT)
+    {
+      TS_Status st = ts_value_make_float (r, -a[0].as.real);
+      if (st != TS_OK)
+        ts_error_set (e, st, 0, 0, "non-finite floating-point operand");
+      return st;
+    }
+  if (op >= 6 && ts_is_number (a) && ts_is_number (a + 1))
+    {
+      int order;
+      TS_Status st = ts_compare_numbers (a, a + 1, &order, e);
+      if (st != TS_OK)
+        return st;
+      return ts_value_copy (r,
+                            a + ((op == 6 ? order <= 0 : order >= 0) ? 0 : 1));
+    }
   for (size_t i = 0; i < n; i++)
     if (a[i].type != TS_INT)
       {
@@ -1378,6 +1451,8 @@ g_ne (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *r,
 
 static const TS_FuncDef g_funcs[]
     = { { "args", g_args, NULL },
+        { "float", g_float, NULL },
+        { "int", g_int, NULL },
         { "__entry", g_entry, NULL },
         { "band", g_integer_op, (void *)0 },
         { "bor", g_integer_op, (void *)1 },
@@ -1444,7 +1519,8 @@ typedef enum
   N_NOT,
   N_AND,
   N_FUNCTION,
-  N_RETURN
+  N_RETURN,
+  N_LIT_FLOAT
 } node_kind_t;
 
 typedef struct dt_arg
@@ -1474,6 +1550,7 @@ typedef struct dt_node
   ts_arg_t *args;
   size_t nargs;
   int64_t number;
+  double real;
   char *string;
   bool boolean;
 } ts_node_t;
@@ -1720,7 +1797,8 @@ ts_node_new (node_kind_t kind, unsigned line)
  *   stays per-VM and lock-free.
  */
 
-void *ts_ng_parse (const char *input); /* ts_parser_ng.c */
+void *ts_ng_parse (void **context, const char *input); /* parser.c */
+void ts_ng_parser_free (void *parser);
 size_t ts_ng_error_offset (void);
 const char *ts_ng_error_message (void);
 
@@ -2125,6 +2203,15 @@ ts_mk_argref (char *tok, unsigned line)
 }
 
 void *
+ts_mk_float (double value, unsigned line)
+{
+  ts_node_t *n = ts_newnode (N_LIT_FLOAT, line);
+  if (n)
+    n->real = value;
+  return n;
+}
+
+void *
 ts_mk_number (char *tok, unsigned line)
 {
   ts_node_t *n;
@@ -2480,9 +2567,10 @@ ts_mk_or (void *lhs, void *rhs, unsigned line)
 /* Parse one input under the front-end lock.  Returns the N_SEQ program
  * wrapper, or NULL (oom set on allocation failure). */
 static void *
-ts_try_parse (const char *input, bool *oom)
+ts_try_parse (void **parser, const char *input, bool *oom)
 {
   void *r;
+  void *temporary_parser = NULL;
   pthread_mutex_lock (&ts_parse_mutex);
   ts_parse_arena *arena = calloc (1, sizeof *arena);
   if (!arena)
@@ -2496,7 +2584,8 @@ ts_try_parse (const char *input, bool *oom)
   ts_pctx.start = input;
   ts_pctx.end = input + strlen (input);
   ts_pctx.oom = false;
-  r = ts_ng_parse (input);
+  r = ts_ng_parse (parser ? parser : &temporary_parser, input);
+  ts_ng_parser_free (temporary_parser);
   if (ts_pctx.oom)
     r = NULL;
   if (r)
@@ -2683,6 +2772,14 @@ ts_validate_functions (ts_node_t *list, unsigned depth, bool function,
         }
       if (fn)
         {
+          if (!strcmp (n->name, "float") || !strcmp (n->name, "int"))
+            {
+              ts_error_set (
+                  error, TS_ERR_INVAL, 0, n->line,
+                  "function name '%s' is reserved for numeric conversion",
+                  n->name);
+              return TS_ERR_INVAL;
+            }
           for (ts_node_t *other = n->next; other; other = other->next)
             if (other->kind == N_FUNCTION && !strcmp (n->name, other->name))
               {
@@ -2755,14 +2852,15 @@ ts_main_entry (ts_node_t *program, TS_Error *error)
 }
 
 static TS_Status
-ts_parse_program (const char *source, ts_node_t **out, TS_Error *error)
+ts_parse_program (TS_VM *vm, const char *source, ts_node_t **out,
+                  TS_Error *error)
 {
   *out = NULL;
   TS_Status limit = ts_source_limits (source, error);
   if (limit != TS_OK)
     return limit;
   bool oom = false;
-  void *r = ts_try_parse (source, &oom);
+  void *r = ts_try_parse (vm ? &vm->syntax_parser : NULL, source, &oom);
   if (r)
     {
       *out = (ts_node_t *)r;
@@ -2998,6 +3096,14 @@ ts_call_with_handle (TS_VM *vm, const TS_Value *modval, const char *modname,
   ret->type = TS_NIL;
   snprintf (vm->last_libname, sizeof vm->last_libname, "%s", mod->name);
   st = f->func (vm, f->userdata, argv, argc, ret, error);
+  if (st == TS_OK
+      && ((unsigned)ret->type > TS_FLOAT
+          || (ret->type == TS_FLOAT && !isfinite (ret->as.real))))
+    {
+      st = TS_ERR_INVAL;
+      ts_error_set (error, st, 0, line,
+                    "native callback returned an invalid value");
+    }
   if (st != TS_OK)
     {
       ts_value_free (ret);
@@ -3133,6 +3239,10 @@ eval_node (TS_VM *vm, ts_node_t *n, TS_Value *out, TS_Error *error)
     case N_LIT_INT:
       out->type = TS_INT;
       out->as.integer = n->number;
+      return TS_OK;
+    case N_LIT_FLOAT:
+      out->type = TS_FLOAT;
+      out->as.real = n->real;
       return TS_OK;
     case N_LIT_STR:
       out->type = TS_STRING;
@@ -3396,6 +3506,14 @@ ts_rt_call (TS_VM *vm, const TS_Value *mod, const char *modname,
       ts_error_set (error, TS_ERR_INVAL, 0, line, "bad call");
       return TS_ERR_INVAL;
     }
+  for (size_t i = 0; i < argc; i++)
+    if ((unsigned)argv[i].type > TS_FLOAT
+        || (argv[i].type == TS_FLOAT && !isfinite (argv[i].as.real)))
+      {
+        ts_error_set (error, TS_ERR_INVAL, 0, line,
+                      "invalid native argument value");
+        return TS_ERR_INVAL;
+      }
   return ts_call_with_handle (vm, mod, modname, func, argv, argc, ret, line,
                               error);
 }
@@ -3431,7 +3549,8 @@ TS_Status
 ts_rt_set (TS_VM *vm, const char *name, TS_Value *val, bool is_const,
            unsigned line, TS_Error *error)
 {
-  if (!vm || !name || !val)
+  if (!vm || !name || !val || (unsigned)val->type > TS_FLOAT
+      || (val->type == TS_FLOAT && !isfinite (val->as.real)))
     {
       ts_error_set (error, TS_ERR_INVAL, 0, line, "bad arguments");
       return TS_ERR_INVAL;
@@ -3557,6 +3676,9 @@ ts_vm_free (TS_VM *vm)
     free (vm->istack);
   }
   pthread_mutex_destroy (&vm->mod_mutex);
+  pthread_mutex_lock (&ts_parse_mutex);
+  ts_ng_parser_free (vm->syntax_parser);
+  pthread_mutex_unlock (&ts_parse_mutex);
   free (vm);
 }
 
@@ -3581,7 +3703,7 @@ ts_exec_source (TS_VM *vm, const char *source, bool reset, TS_Error *error)
 {
   ts_node_t *prog;
   TS_Status st;
-  st = ts_parse_program (source, &prog, error);
+  st = ts_parse_program (vm, source, &prog, error);
   if (st != TS_OK)
     return st;
   if (reset)
@@ -3846,6 +3968,10 @@ ts_jit_eval_simple (TS_VM *vm, ts_node_t *n, TS_Value *out, TS_Error *error)
       out->type = TS_INT;
       out->as.integer = n->number;
       return TS_OK;
+    case N_LIT_FLOAT:
+      out->type = TS_FLOAT;
+      out->as.real = n->real;
+      return TS_OK;
     case N_LIT_STR:
       out->type = TS_STRING;
       out->as.string = strdup (n->string);
@@ -4004,7 +4130,7 @@ ts_vm_run_jiterati (TS_VM *vm, const char *source, char **output,
                     "Jiterati backend is unavailable in this build");
       return TS_ERR_UNSUPPORTED;
     }
-  st = ts_parse_program (source, &prog, error);
+  st = ts_parse_program (vm, source, &prog, error);
   if (st != TS_OK)
     return st;
   vm_reset_run (vm);
@@ -4269,7 +4395,7 @@ ts_check_syntax (const char *source, TS_Error *error)
       ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad arguments");
       return TS_ERR_INVAL;
     }
-  st = ts_parse_program (source, &prog, error);
+  st = ts_parse_program (NULL, source, &prog, error);
   ts_node_free (prog);
   return st;
 }
@@ -4298,6 +4424,7 @@ ts_check_syntax (const char *source, TS_Error *error)
 
 struct ts_cg_paths
 {
+  TS_VM *vm;
   char **v;
   size_t n;
   size_t cap;
@@ -4466,7 +4593,8 @@ ts_cg_inline_chain (ts_node_t **head, struct ts_cg_paths *paths, char **stack,
             pp = &s->next; /* Too large / unreadable: run time reports. */
             continue;
           }
-        TS_Status parse_status = ts_parse_program (text, &prog, &dummy);
+        TS_Status parse_status
+            = ts_parse_program (paths->vm, text, &prog, &dummy);
         free (text);
         if (parse_status != TS_OK)
           {
@@ -4805,6 +4933,18 @@ ts_cg_expr (ts_cg_t *g, ts_node_t *n, const char *out)
     case N_LIT_INT:
       ts_cg_integer (g, out, n->number);
       break;
+    case N_LIT_FLOAT:
+      {
+        uint64_t bits;
+        memcpy (&bits, &n->real, sizeof bits);
+        ts_cg_fmt (g,
+                   "{ uint64_t ts_float_bits = UINT64_C(%llu); "
+                   "%s.type = %s; memcpy(&%s.as.real, &ts_float_bits, sizeof "
+                   "ts_float_bits); }\n",
+                   (unsigned long long)bits, out,
+                   g->dt_mode ? "DT_TERM_FLOAT" : "TS_FLOAT", out);
+      }
+      break;
     case N_LIT_STR:
       ts_cg_fmt (g, "if (%s (&%s, ", CG_MKSTR (g), out);
       ts_cg_cstr (g, n->string);
@@ -5102,6 +5242,7 @@ ts_cg_emit (TS_VM *vm, ts_node_t *prog, const char *unit_name, bool dt_mode,
   memset (&g, 0, sizeof g);
   g.dt_mode = dt_mode;
   memset (&paths, 0, sizeof paths);
+  paths.vm = vm;
   for (i = 0; i < vm->nspaths; i++)
     ts_cg_paths_add (&paths, vm->spaths[i]);
   memset (stack, 0, sizeof stack);
@@ -5148,7 +5289,7 @@ ts_cg_emit (TS_VM *vm, ts_node_t *prog, const char *unit_name, bool dt_mode,
         " * while std.* users add the stdlib (force archive extraction with\n"
         " * -u, since weak references alone do not pull it in):\n"
         " * Compile: cc -o UNIT UNIT.c -ltermscript_standalone -lnovoparse "
-        "-lpthread\n"
+        "-lpthread -lm\n"
         " *   (+ -u ts_stdlib_register_all -u ts_stdlib_search_path\n"
         " *      -ltermscript_stdlib for std.* native modules)\n"
         " * Static:  cc -static -o UNIT UNIT.c ... (same libraries)\n"
@@ -5294,7 +5435,7 @@ ts_vm_compile_to_c (TS_VM *vm, const char *source, const char *unit_name,
     }
   /* Parse (no execution); syntax errors fail the compile. */
   ts_error_clear (&derr);
-  if (ts_parse_program (source, &prog, &derr) != TS_OK)
+  if (ts_parse_program (vm, source, &prog, &derr) != TS_OK)
     {
       ts_error_set (error, derr.code != TS_OK ? derr.code : TS_ERR_PARSE,
                     derr.system_errno, derr.offset,
@@ -5384,7 +5525,7 @@ ts_vm_compile_to_c_dt (TS_VM *vm, const char *source, const char *unit_name,
       return NULL;
     }
   ts_error_clear (&derr);
-  if (ts_parse_program (source, &prog, &derr) != TS_OK)
+  if (ts_parse_program (vm, source, &prog, &derr) != TS_OK)
     {
       ts_error_set (error, derr.code != TS_OK ? derr.code : TS_ERR_PARSE,
                     derr.system_errno, derr.offset,
@@ -5400,8 +5541,10 @@ ts_vm_compile_to_c_dt (TS_VM *vm, const char *source, const char *unit_name,
 const char *
 ts_version_string (void)
 {
-  static char buf[32];
-  snprintf (buf, sizeof buf, "%d.%d.%d", TS_VERSION_MAJOR, TS_VERSION_MINOR,
-            TS_VERSION_PATCH);
-  return buf;
+#define TS_STRINGIFY_IMPL(x) #x
+#define TS_STRINGIFY(x) TS_STRINGIFY_IMPL (x)
+  return TS_STRINGIFY (TS_VERSION_MAJOR) "." TS_STRINGIFY (
+      TS_VERSION_MINOR) "." TS_STRINGIFY (TS_VERSION_PATCH);
+#undef TS_STRINGIFY
+#undef TS_STRINGIFY_IMPL
 }

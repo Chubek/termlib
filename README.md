@@ -16,7 +16,7 @@ Termlib is a portable terminal systems library written in C11. It provides PTY a
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-./build/bin/termscript examples/hello.ts
+./build/bin/termscript termscript/examples/core.tsc
 ```
 
 Run a script through the VM, or emit a standalone C translation unit:

@@ -153,7 +153,8 @@ paths at build time.
 
 ## Adding a module
 
-Native module ABI version 1 is size-tagged and counted. Use
+Native module ABI version 2 is size-tagged and counted. Rebuild ABI-v1 modules
+and handle or explicitly reject the new finite `TS_FLOAT` value tag. Use
 `TS_MODULE_INIT("std.name", funcs)` for a static array or
 `ts_module_init(&module, name, funcs, count)` for a dynamic descriptor.
 Remove the old `{NULL, NULL, NULL}` sentinel and rebuild native extensions.
@@ -165,7 +166,7 @@ See [the C API contract](../../../manual/18-termscript-vm.md#native-module-abi).
 1. Create `stdlib/<name>/` with `<name>.c` (a `TS_Module`
    named `std.<name>`), `<name>.h` (`extern const TS_Module
    ts_std_<name>_module;`), and `<name>.tsc` (bind `<name>_m`,
-   parenthesized scalar/reference arguments — nested calls do not parse).
+   parenthesized arguments, including nested expressions).
 2. Add `<name>` to `TS_STDLIB_MODULES` in `stdlib/CMakeLists.txt`,
    the registry table in `ts_stdlib.c`, the includes in
    `ts_stdlib.h`, and update `TS_STDLIB_NMODULES`. Add behavioral tests as

@@ -1,4 +1,5 @@
 /* ts_parser_ng.c -- NovoParse front end adapter for Termscript.ng. */
+#include "termscript.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -29,6 +30,7 @@ void *ts_mk_unary (char *name, void *tail, unsigned line);
 void *ts_mk_callrest (char *func, void *args, unsigned line);
 void *ts_mk_ref (char *name, unsigned line);
 void *ts_mk_number (char *tok, unsigned line);
+void *ts_mk_float (double value, unsigned line);
 void *ts_mk_string (char *tok, unsigned line);
 void *ts_mk_argstr (char *tok, unsigned line);
 void *ts_mk_argnum (char *tok, unsigned line);
@@ -191,23 +193,24 @@ ts_np_is_expr_node (const np_node *node)
   return ts_np_is (node, "Expr") || ts_np_is (node, "OrExpr")
          || ts_np_is (node, "RefExpr") || ts_np_is (node, "CallExpr")
          || ts_np_is (node, "Call") || ts_np_is (node, "IdentExpr")
-         || ts_np_is (node, "NumberExpr") || ts_np_is (node, "StringExpr")
-         || ts_np_is (node, "GroupExpr") || ts_np_is (node, "SymbolExpr")
-         || ts_np_is (node, "FieldExpr") || ts_np_is (node, "NotExpr")
-         || ts_np_is (node, "FlowExpr") || ts_np_is (node, "SuccessExpr")
-         || ts_np_is (node, "ListExpr") || ts_np_is (node, "MapExpr")
-         || ts_np_is (node, "BinaryExpr") || ts_np_is (node, "AndExpr")
-         || ts_np_is (node, "BitOrExpr") || ts_np_is (node, "BitXorExpr")
-         || ts_np_is (node, "BitAndExpr") || ts_np_is (node, "NegExpr")
-         || ts_np_is (node, "DotCall") || ts_np_is (node, "InvokeCall");
+         || ts_np_is (node, "NumberExpr") || ts_np_is (node, "FloatExpr")
+         || ts_np_is (node, "StringExpr") || ts_np_is (node, "GroupExpr")
+         || ts_np_is (node, "SymbolExpr") || ts_np_is (node, "FieldExpr")
+         || ts_np_is (node, "NotExpr") || ts_np_is (node, "FlowExpr")
+         || ts_np_is (node, "SuccessExpr") || ts_np_is (node, "ListExpr")
+         || ts_np_is (node, "MapExpr") || ts_np_is (node, "BinaryExpr")
+         || ts_np_is (node, "AndExpr") || ts_np_is (node, "BitOrExpr")
+         || ts_np_is (node, "BitXorExpr") || ts_np_is (node, "BitAndExpr")
+         || ts_np_is (node, "NegExpr") || ts_np_is (node, "DotCall")
+         || ts_np_is (node, "InvokeCall");
 }
 
 static bool
 ts_np_is_arg_node (const np_node *node)
 {
   return ts_np_is (node, "ArgString") || ts_np_is (node, "ArgNumber")
-         || ts_np_is (node, "ArgRef") || ts_np_is (node, "ArgWord")
-         || ts_np_is (node, "ArgSymbol");
+         || ts_np_is (node, "ArgFloat") || ts_np_is (node, "ArgRef")
+         || ts_np_is (node, "ArgWord") || ts_np_is (node, "ArgSymbol");
 }
 
 static bool
@@ -245,10 +248,38 @@ ts_np_first_expr (const np_node *node)
 }
 
 static void *
+ts_np_float (const np_node *token, unsigned line)
+{
+  if (!token)
+    return NULL;
+  char *text = ts_np_textdup (token);
+  if (!text)
+    return NULL;
+  TS_Value value = { 0 };
+  TS_Error error = { 0 };
+  TS_Status status = ts_value_parse_float (&value, text, &error);
+  double number = status == TS_OK ? value.as.real : 0.0;
+  ts_value_free (&value);
+  if (status != TS_OK)
+    {
+      if (status == TS_ERR_NOMEM)
+        ts_oom ();
+      ts_ng_set_error (np_node_start (token), error.message);
+      return NULL;
+    }
+  return ts_mk_float (number, line);
+}
+
+static void *
 ts_np_arg (const np_node *node, const char *input)
 {
   const np_node *tok;
   unsigned line = ts_np_line (node, input);
+  if (ts_np_is (node, "ArgFloat"))
+    {
+      void *value = ts_np_float (ts_np_first (node, "FLOAT"), line);
+      return value ? ts_mk_argexpr (value) : NULL;
+    }
   if (ts_np_is (node, "ArgString"))
     return (tok = ts_np_first (node, "STRING"))
                ? ts_mk_argstr (ts_np_textdup (tok), line)
@@ -385,7 +416,8 @@ ts_np_call (const np_node *node, const char *input)
     {
       if (module
           && (!strcmp (module, "print") || !strcmp (module, "min")
-              || !strcmp (module, "max") || !strcmp (module, "error")))
+              || !strcmp (module, "max") || !strcmp (module, "error")
+              || !strcmp (module, "float") || !strcmp (module, "int")))
         {
           func = !strcmp (module, "print") ? ts_np_dup ("puts") : module;
           module = ts_np_dup ("G");
@@ -585,6 +617,8 @@ ts_np_expr (const np_node *node, const char *input)
     return (tok = ts_np_first (node, "NUMBER"))
                ? ts_mk_number (ts_np_textdup (tok), line)
                : NULL;
+  if (ts_np_is (node, "FloatExpr"))
+    return ts_np_float (ts_np_first (node, "FLOAT"), line);
   if (ts_np_is (node, "StringExpr"))
     return (tok = ts_np_first (node, "STRING"))
                ? ts_mk_string (ts_np_textdup (tok), line)
@@ -814,8 +848,14 @@ ts_np_stmt (const np_node *node, const char *input)
   return NULL;
 }
 
+void
+ts_ng_parser_free (void *parser)
+{
+  np_parser_destroy (parser);
+}
+
 void *
-ts_ng_parse (const char *input)
+ts_ng_parse (void **context, const char *input)
 {
   char error[512];
   np_status status;
@@ -828,7 +868,12 @@ ts_ng_parse (const char *input)
       ts_ng_set_error (0, "input is NULL");
       return NULL;
     }
-  parser = Termscript_create (error, sizeof error);
+  parser = *context;
+  if (!parser)
+    {
+      parser = Termscript_create (error, sizeof error);
+      *context = parser;
+    }
   if (!parser)
     {
       ts_ng_set_error (0, error[0] ? error : "Termscript grammar rejected");
@@ -842,7 +887,6 @@ ts_ng_parse (const char *input)
       char *normalized = ts_parse_alloc (length + 2);
       if (!normalized)
         {
-          np_parser_destroy (parser);
           return NULL;
         }
       memcpy (normalized, input, length);
@@ -857,13 +901,13 @@ ts_ng_parse (const char *input)
       size_t position = np_parser_position (parser);
       ts_ng_set_error (position > length ? length : position,
                        np_parser_error (parser));
-      np_parser_destroy (parser);
+      if (status == NP_ERROR_MEMORY)
+        ts_oom ();
       return NULL;
     }
   tree = ts_np_program (np_parser_root (parser), input);
-  if (!tree)
+  if (!tree && !ts_ng_last_message[0])
     ts_ng_set_error (np_parser_position (parser),
                      "unsupported or invalid Termscript syntax tree");
-  np_parser_destroy (parser);
   return tree;
 }

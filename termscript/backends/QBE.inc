@@ -148,6 +148,13 @@ ts_qexpr (ts_qg *g, ts_node_t *n, unsigned out)
     case N_LIT_INT:
       ts_qlit (g, out, TS_INT, n->number, NULL);
       break;
+    case N_LIT_FLOAT:
+      {
+        int64_t bits;
+        memcpy (&bits, &n->real, sizeof bits);
+        ts_qlit (g, out, TS_FLOAT, bits, NULL);
+      }
+      break;
     case N_LIT_STR:
       ts_qlit (g, out, TS_STRING, 0, n->string);
       break;
@@ -480,8 +487,9 @@ ts_vm_compile_to_qbe (TS_VM *vm, const char *source, bool dt_mode,
       ts_error_set (error, TS_ERR_INVAL, 0, 0, "bad arguments");
       return NULL;
     }
-  if (ts_parse_program (source, &prog, error) != TS_OK)
+  if (ts_parse_program (vm, source, &prog, error) != TS_OK)
     return NULL;
+  paths.vm = vm;
   for (i = 0; i < vm->nspaths; i++)
     ts_cg_paths_add (&paths, vm->spaths[i]);
   ts_cg_inline_chain (&prog->first, &paths, stack, 0, 0);

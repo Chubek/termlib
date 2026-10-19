@@ -48,6 +48,10 @@ int main ()
   raises<std::invalid_argument> ([] { value bad (static_cast<const char *> (nullptr)); });
   raises<std::out_of_range> ([] { value bad (UINT64_MAX); });
   CHECK (value (true).to_string () == "true");
+  CHECK (value (1.25).type () == TS_FLOAT
+         && value (1.25).to_string () == "1.25");
+  CHECK (value (-0.0).to_string () == "-0.0" && !value (-0.0).truthy ());
+  raises<error> ([] { value bad (std::numeric_limits<double>::infinity ()); });
   static const char tag = 0;
   TS_Value raw{};
   CHECK (ts_value_make_handle (&raw, new int (7), destroy, "test", &tag) == TS_OK);

@@ -8,6 +8,7 @@
 %token TRIVIA /([ \t\r\n]+|#[^\n]*\n)+/;
 %token HSPACE /([ \t\r]+|#[^\n]*)+/;
 %token NUMBER /-?(0[xX][0-9a-fA-F]+|0|[1-9][0-9]*)/;
+%token FLOAT /-?((0|[1-9][0-9]*)\.[0-9]+([eE][+-]?[0-9]+)?|(0|[1-9][0-9]*)[eE][+-]?[0-9]+)/;
 %token STRING /"([^"\\]|\\.)*"/;
 # Scannerless disambiguation must not consume a block terminator as a name,
 # then close the block at the "end" substring in a later method like render.
@@ -131,7 +132,8 @@ unary: "&" name => RefExpr
      | "{" layout "}" => MapExpr
      | call => CallExpr
      | name => IdentExpr
-     | NUMBER => NumberExpr
+      | NUMBER => NumberExpr
+      | FLOAT => FloatExpr
      | STRING => StringExpr;
 
 call: name layout ":" layout function_name call_args => Call
@@ -148,7 +150,8 @@ call_args: (gap arg)* => SpaceArgs
 arg_list: expr (layout "," layout expr)* layout ","? => ArgList;
 
 arg: STRING => ArgString
-   | NUMBER => ArgNumber
+    | NUMBER => ArgNumber
+    | FLOAT => ArgFloat
    | "&" name => ArgRef
    | ":" WORD => ArgSymbol
    | name => ArgWord;

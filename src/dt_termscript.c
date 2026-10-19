@@ -29,6 +29,7 @@ extern TS_Status ts_stdlib_search_path (TS_VM *, TS_Error *) __attribute__((weak
 
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,7 @@ struct DT_TermVM
 };
 
 _Static_assert ((int) TS_OK == (int) DT_OK, "status mirror");
+_Static_assert ((int)TS_FLOAT == (int)DT_TERM_FLOAT, "float tag mirror");
 _Static_assert ((int) TS_ERR_INVAL == (int) DT_ERR_INVALID_ARGUMENT,
                 "status mirror");
 _Static_assert ((int) TS_ERR_NOMEM == (int) DT_ERR_NO_MEMORY,
@@ -148,6 +150,12 @@ dt_from_ts (DT_TermValue *d, const TS_Value *s)
       d->type = DT_TERM_INT;
       d->as.integer = s->as.integer;
       return TS_OK;
+    case TS_FLOAT:
+      if (!isfinite (s->as.real))
+        return TS_ERR_INVAL;
+      d->type = DT_TERM_FLOAT;
+      d->as.real = s->as.real;
+      return TS_OK;
     case TS_STRING:
       d->type = DT_TERM_STRING;
       d->as.string = s->as.string ? strdup (s->as.string) : NULL;
@@ -185,6 +193,12 @@ ts_from_dt (TS_Value *d, const DT_TermValue *s)
     case DT_TERM_INT:
       d->type = TS_INT;
       d->as.integer = s->as.integer;
+      return TS_OK;
+    case DT_TERM_FLOAT:
+      if (!isfinite (s->as.real))
+        return TS_ERR_INVAL;
+      d->type = TS_FLOAT;
+      d->as.real = s->as.real;
       return TS_OK;
     case DT_TERM_STRING:
       d->type = TS_STRING;
@@ -230,26 +244,42 @@ dt_trampoline (TS_VM *tsvm, void *userdata, const TS_Value *argv,
       return TS_ERR_NOMEM;
     }
   for (i = 0; i < argc; i++)
-    if (dt_from_ts (&dargv[i], &argv[i]) != TS_OK)
-      {
-        size_t k;
-        for (k = 0; k < i; k++)
-          dt_release_value (&dargv[k]);
-        free (dargv);
-        ts_error_set (tserr, TS_ERR_NOMEM, ENOMEM, 0, "out of memory");
-        return TS_ERR_NOMEM;
-      }
+    {
+      TS_Status converted = dt_from_ts (&dargv[i], &argv[i]);
+      if (converted != TS_OK)
+        {
+          size_t k;
+          for (k = 0; k < i; k++)
+            dt_release_value (&dargv[k]);
+          free (dargv);
+          ts_error_set (tserr, converted,
+                        converted == TS_ERR_NOMEM ? ENOMEM : 0, 0,
+                        converted == TS_ERR_NOMEM ? "out of memory"
+                                                  : "invalid argument value");
+          return converted;
+        }
+    }
   dret.type = DT_TERM_NIL;
   dt_error_clear (&dterr);
   st = def->func (dtvm, dargv, argc, &dret, &dterr);
   for (i = 0; i < argc; i++)
     dt_release_value (&dargv[i]);
   free (dargv);
-  if (ts_from_dt (ret, &dret) != TS_OK)
+  if (st != DT_OK)
     {
       dt_release_value (&dret);
-      ts_error_set (tserr, TS_ERR_NOMEM, ENOMEM, 0, "out of memory");
-      return TS_ERR_NOMEM;
+      ts_convert_error (tserr, &dterr);
+      return (TS_Status)st;
+    }
+  TS_Status converted = ts_from_dt (ret, &dret);
+  if (converted != TS_OK)
+    {
+      dt_release_value (&dret);
+      ts_error_set (tserr, converted, converted == TS_ERR_NOMEM ? ENOMEM : 0,
+                    0,
+                    converted == TS_ERR_NOMEM ? "out of memory"
+                                              : "invalid return value");
+      return converted;
     }
   dt_release_value (&dret);
   ts_convert_error (tserr, &dterr);
@@ -888,17 +918,20 @@ dt_rt_call (DT_TermVM *vm, const DT_TermValue *mod, const char *modname,
   TS_Error tserr;
   TS_Status st;
   size_t i;
-  if (!vm || !mod || !func || !ret)
+  if (!vm || !mod || !func || !ret || (argc && !argv))
     {
       dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, line, "bad call");
       return DT_ERR_INVALID_ARGUMENT;
     }
   tmod.type = TS_NIL;
   tret.type = TS_NIL;
-  if (ts_from_dt (&tmod, mod) != TS_OK)
+  st = ts_from_dt (&tmod, mod);
+  if (st != TS_OK)
     {
-      dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
-      return DT_ERR_NO_MEMORY;
+      dt_err_set (error, (DT_Status)st, st == TS_ERR_NOMEM ? ENOMEM : 0, line,
+                  st == TS_ERR_NOMEM ? "out of memory"
+                                     : "invalid module value");
+      return (DT_Status)st;
     }
   if (argc)
     {
@@ -911,17 +944,22 @@ dt_rt_call (DT_TermVM *vm, const DT_TermValue *mod, const char *modname,
           return DT_ERR_NO_MEMORY;
         }
       for (i = 0; i < argc; i++)
-        if (ts_from_dt (&targv[i], &argv[i]) != TS_OK)
-          {
-            size_t k;
-            for (k = 0; k < i; k++)
-              ts_value_free (&targv[k]);
-            free (targv);
-            ts_value_free (&tmod);
-            dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0,
-                        "out of memory");
-            return DT_ERR_NO_MEMORY;
-          }
+        {
+          st = ts_from_dt (&targv[i], &argv[i]);
+          if (st != TS_OK)
+            {
+              size_t k;
+              for (k = 0; k < i; k++)
+                ts_value_free (&targv[k]);
+              free (targv);
+              ts_value_free (&tmod);
+              dt_err_set (error, (DT_Status)st,
+                          st == TS_ERR_NOMEM ? ENOMEM : 0, line,
+                          st == TS_ERR_NOMEM ? "out of memory"
+                                             : "invalid argument value");
+              return (DT_Status)st;
+            }
+        }
     }
   ts_error_clear (&tserr);
   st = ts_rt_call (vm->tsvm, &tmod, modname, func, targv, argc, &tret,
@@ -994,10 +1032,12 @@ dt_rt_set (DT_TermVM *vm, const char *name, DT_TermValue *val,
       return DT_ERR_INVALID_ARGUMENT;
     }
   tmp.type = TS_NIL;
-  if (ts_from_dt (&tmp, val) != TS_OK)
+  st = ts_from_dt (&tmp, val);
+  if (st != TS_OK)
     {
-      dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
-      return DT_ERR_NO_MEMORY;
+      dt_err_set (error, (DT_Status)st, st == TS_ERR_NOMEM ? ENOMEM : 0, line,
+                  st == TS_ERR_NOMEM ? "out of memory" : "invalid value");
+      return (DT_Status)st;
     }
   ts_error_clear (&tserr);
   st = ts_rt_set (vm->tsvm, name, &tmp, is_const, line, &tserr);
@@ -1030,6 +1070,21 @@ dt_rt_step (DT_TermVM *vm, DT_Error *error)
 }
 
 DT_Status
+dt_rt_mkfloat (DT_TermValue *val, double number, DT_Error *error)
+{
+  if (!val || !isfinite (number))
+    {
+      dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0,
+                  "finite float required");
+      return DT_ERR_INVALID_ARGUMENT;
+    }
+  dt_release_value (val);
+  val->type = DT_TERM_FLOAT;
+  val->as.real = number;
+  return DT_OK;
+}
+
+DT_Status
 dt_rt_mkstring (DT_TermValue *val, const char *s, DT_Error *error)
 {
   if (!val)
@@ -1058,6 +1113,8 @@ dt_rt_truthy (const DT_TermValue *val)
     case DT_TERM_NIL: return false;
     case DT_TERM_BOOL: return val->as.boolean;
     case DT_TERM_INT: return val->as.integer != 0;
+    case DT_TERM_FLOAT:
+      return isfinite (val->as.real) && val->as.real != 0.0;
     case DT_TERM_STRING:
       return val->as.string && val->as.string[0] != '\0';
     case DT_TERM_HANDLE: return true;
@@ -1245,10 +1302,12 @@ dt_termvalue_to_string (const DT_TermValue *value, char **out,
       dt_err_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0, "bad arguments");
       return DT_ERR_INVALID_ARGUMENT;
     }
-  if (ts_from_dt (&tmp, value) != TS_OK)
+  st = ts_from_dt (&tmp, value);
+  if (st != TS_OK)
     {
-      dt_err_set (error, DT_ERR_NO_MEMORY, ENOMEM, 0, "out of memory");
-      return DT_ERR_NO_MEMORY;
+      dt_err_set (error, (DT_Status)st, st == TS_ERR_NOMEM ? ENOMEM : 0, 0,
+                  st == TS_ERR_NOMEM ? "out of memory" : "invalid value");
+      return (DT_Status)st;
     }
   {
     TS_Error tserr;

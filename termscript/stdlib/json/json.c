@@ -20,8 +20,11 @@ j_parse (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
     return TS_ERR_INVAL;
   if (ts_std_str (&argv[0], &text, error, "parse") != TS_OK)
     return TS_ERR_INVAL;
-  if (ts_dom_parse_json (text, &dom, error) != TS_OK)
+  TS_Status status = ts_dom_parse_json (text, &dom, error);
+  if (status != TS_OK)
     {
+      if (status != TS_ERR_PARSE)
+        return status;
       /* Malformed input is nil so `or` fallbacks work. */
       ts_std_ret_nil (ret);
       return TS_OK;
@@ -46,6 +49,9 @@ j_type (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
         case TS_NIL: t = "null"; break;
         case TS_BOOL: t = "bool"; break;
         case TS_INT: t = "int"; break;
+        case TS_FLOAT:
+          t = "float";
+          break;
         default: t = "string"; break;
         }
       return ts_std_ret_str (ret, t, error);

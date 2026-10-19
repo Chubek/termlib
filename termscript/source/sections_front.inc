@@ -91,7 +91,9 @@ ts_front_clone (const ts_node_t *s)
     {
   ts_node_t *n = ts_node_new (s->kind, s->line);
   if (!n) { ts_node_free (head); return NULL; }
-  n->number = s->number; n->boolean = s->boolean;
+  n->number = s->number;
+  n->boolean = s->boolean;
+  n->real = s->real;
   n->name = ts_front_dup (s->name); n->module = ts_front_dup (s->module);
   n->func = ts_front_dup (s->func); n->string = ts_front_dup (s->string);
   n->first = ts_front_clone (s->first); n->cond = ts_front_clone (s->cond);

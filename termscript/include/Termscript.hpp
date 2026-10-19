@@ -60,6 +60,10 @@ class value
 public:
   value () noexcept = default;
   explicit value (bool b) noexcept { ts_value_make_bool (&value_, b); }
+  explicit value (double number)
+  {
+    detail::check (ts_value_make_float (&value_, number));
+  }
   template<class I, std::enable_if_t<std::is_integral_v<I>
                                     && !std::is_same_v<I, bool>, int> = 0>
   explicit value (I i)

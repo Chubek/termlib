@@ -19,8 +19,11 @@ t_parse (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
     return TS_ERR_INVAL;
   if (ts_std_str (&argv[0], &text, error, "parse") != TS_OK)
     return TS_ERR_INVAL;
-  if (ts_dom_parse_toml (text, &dom, error) != TS_OK)
+  TS_Status status = ts_dom_parse_toml (text, &dom, error);
+  if (status != TS_OK)
     {
+      if (status != TS_ERR_PARSE)
+        return status;
       ts_std_ret_nil (ret);
       return TS_OK;
     }
@@ -42,6 +45,8 @@ t_type (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
         case TS_NIL: return ts_std_ret_str (ret, "null", error);
         case TS_BOOL: return ts_std_ret_str (ret, "bool", error);
         case TS_INT: return ts_std_ret_str (ret, "int", error);
+        case TS_FLOAT:
+          return ts_std_ret_str (ret, "float", error);
         default: return ts_std_ret_str (ret, "string", error);
         }
     }

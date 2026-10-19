@@ -1,0 +1,64 @@
+# Runnable native-ABI-v2 numeric conformance, shared by every backend.
+use list, map, json, toml, yaml
+fn half(n: float) -> float { return n / 2.0 }
+fn main() -> int {
+    if half(5) != 2.5 { return 1 }
+    if G:type(1.0) != "float" { return 2 }
+    if 1e2 + 0.5 != 100.5 { return 3 }
+    if -1.25 * 2 != -2.5 { return 4 }
+    if 5.5 % 2.0 != 1.5 { return 5 }
+    if -5.5 % 2.0 != -1.5 { return 6 }
+    if int(-3.75) != -3 { return 7 }
+    if float("2.5e1") != 25.0 { return 8 }
+    if 9007199254740993 == 9007199254740992.0 { return 9 }
+    if !(9007199254740993 > 9007199254740992.0) { return 10 }
+    if !(9223372036854775807 < 9223372036854775808.0) { return 11 }
+    if -9223372036854775808 != -9223372036854775808.0 { return 12 }
+    if 0 != -0.0 { return 13 }
+    if -0.0 { return 14 }
+    if min(2.5, 2) != 2 { return 15 }
+    if max(2, 2.5) != 2.5 { return 16 }
+    var n = 0.0
+    while n < 1.0 { n += 0.25 }
+    if n != 1.0 { return 17 }
+    const numbers = [1.25, 2e0, -0.5]
+    if list.get(numbers, 0) != 1.25 { return 18 }
+    const mapping = {"x": 1.5}
+    if map.get(mapping, "x") != 1.5 { return 19 }
+    const document = json.parse("{\"x\":1.25,\"small\":5e-324,\"large\":1e100}")
+    if json.get(document, "x") != 1.25 { return 20 }
+    if json.get(document, "small") <= 0.0 { return 21 }
+    if json.get(document, "large") != 1e100 { return 22 }
+    const decoded = json.parse(json.stringify(document))
+    if json.get(decoded, "x") != 1.25 { return 23 }
+    const settings = toml.parse("ratio = 1.25\nvalues = [1.0, 2.5]\n")
+    if toml.get(settings, "ratio") != 1.25 { return 24 }
+    if G:type(json.get(document, "x")) != "float" { return 25 }
+    if json.parse("01") != nil { return 26 }
+    if json.parse("1.") != nil { return 27 }
+    if json.parse("1e+") != nil { return 28 }
+    if json.parse("1e999") != nil { return 29 }
+    if toml.parse("number = inf\n") != nil { return 30 }
+    if toml.parse("number = nan\n") != nil { return 31 }
+    if toml.get(settings, "values.1") != 2.5 { return 32 }
+    if G:type(min(1, 1.0)) != "int" { return 33 }
+    if G:type(min(1.0, 1)) != "float" { return 34 }
+    if toml.parse("values = [1.0, nan]\n") != nil { return 35 }
+    const y = yaml.parse("ratio: 1.25\nlabel: word.e3\n")
+    if yaml.get(y, "ratio") != 1.25 { return 36 }
+    if yaml.get(y, "label") != "word.e3" { return 37 }
+    if toml.type(toml.get(settings, "ratio")) != "float" { return 38 }
+    if yaml.type(yaml.get(y, "ratio")) != "float" { return 39 }
+    if yaml.parse("ratio: 1e999\n") != nil { return 40 }
+    if yaml.parse("values:\n  - 1e999\n") != nil { return 41 }
+    const legacy = G:add 1.25 0.75;
+    if legacy != 2.0 { return 42 }
+    if -2.5E-2 != -0.025 { return 43 }
+    if !(0 > -0.5) { return 44 }
+    const unicode = json.parse("{\"text\":\"\\uD83D\\uDE00\"}")
+    if json.get(unicode, "text") != "😀" { return 45 }
+    if json.parse("\"\\uD800\"") != nil { return 46 }
+    if json.parse("\"\\u0000\"") != nil { return 47 }
+    print("finite numeric core OK")
+    return 0
+}

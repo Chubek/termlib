@@ -74,6 +74,9 @@ target_include_directories(termscript_standalone PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/termscript/include
 )
 target_link_libraries(termscript_standalone PRIVATE Threads::Threads novoparse_runtime)
+if(UNIX)
+  target_link_libraries(termscript_standalone PUBLIC m)
+endif()
 
 set(TS_JITERATI_DEFAULT OFF)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
@@ -189,6 +192,10 @@ if(TARGET lexbor_static)
 endif()
 set(TS_DRIVER_FLAGS "\"-pthread\",\n")
 set(TS_DRIVER_STATIC_FLAGS "\"-pthread\",\n")
+if(UNIX)
+  string(APPEND TS_DRIVER_FLAGS "\"-lm\",\n")
+  string(APPEND TS_DRIVER_STATIC_FLAGS "\"-lm\",\n")
+endif()
 foreach(flag IN LISTS TERMSCRIPT_NATIVE_FLAGS)
   string(APPEND TS_DRIVER_FLAGS "\"${flag}\",\n")
 endforeach()
@@ -233,6 +240,7 @@ install(FILES termscript/Termscript.ng
   DESTINATION ${CMAKE_INSTALL_DATADIR}/termlib
 )
 install(FILES termscript/IMPLEMENTATION.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES termscript/MIGRATING-0.4.md DESTINATION ${CMAKE_INSTALL_DOCDIR}/termscript)
 install(FILES termscript/termak/README.md DESTINATION ${CMAKE_INSTALL_DOCDIR}/termak COMPONENT termak)
 
 # Project documentation and the 22-chapter manual.
@@ -251,6 +259,34 @@ add_custom_target(termlib-manual
 )
 
 if(BUILD_TESTING)
+  add_executable(test_replay_export tests/test_replay_export.c)
+  target_link_libraries(test_replay_export PRIVATE termlib)
+  add_test(NAME replay_export COMMAND test_replay_export)
+  set_tests_properties(replay_export PROPERTIES TIMEOUT 30)
+  add_executable(test_connections tests/test_connections.c)
+  target_link_libraries(test_connections PRIVATE termlib)
+  if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_connections PRIVATE -Wall -Wextra -Werror)
+  endif()
+  add_test(NAME connections COMMAND test_connections)
+  set_tests_properties(connections PROPERTIES TIMEOUT 10)
+  if(UNIX AND NOT APPLE AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(test_replay_export_alloc tests/test_replay_export.c)
+    target_compile_definitions(test_replay_export_alloc PRIVATE TS_TEST_ALLOC=1)
+    target_compile_options(test_replay_export_alloc PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(test_replay_export_alloc PRIVATE termlib)
+    target_link_options(test_replay_export_alloc PRIVATE
+      -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+    add_test(NAME replay_export_alloc COMMAND test_replay_export_alloc)
+    set_tests_properties(replay_export_alloc PROPERTIES TIMEOUT 30)
+    add_executable(test_connections_alloc tests/test_connections.c)
+    target_compile_definitions(test_connections_alloc PRIVATE TS_TEST_ALLOC=1)
+    target_compile_options(test_connections_alloc PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(test_connections_alloc PRIVATE termlib)
+    target_link_options(test_connections_alloc PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc)
+    add_test(NAME connections_alloc COMMAND test_connections_alloc)
+    set_tests_properties(connections_alloc PROPERTIES TIMEOUT 10)
+  endif()
   find_program(TERMAK_RUBY ruby)
   if(TERMAK_RUBY)
     add_test(NAME termak COMMAND ${TERMAK_RUBY} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_termak.rb)
@@ -258,11 +294,70 @@ if(BUILD_TESTING)
   add_executable(test_termscript_modern tests/test_termscript_modern.c)
   target_link_libraries(test_termscript_modern PRIVATE termscript_standalone)
   add_test(NAME termscript_modern COMMAND test_termscript_modern)
+  add_executable(test_termscript_numeric tests/test_termscript_numeric.c)
+  target_link_libraries(test_termscript_numeric PRIVATE termscript_standalone)
+  add_test(NAME termscript_numeric COMMAND test_termscript_numeric)
+  set_tests_properties(termscript_numeric PROPERTIES TIMEOUT 30)
+  add_test(NAME termscript_numeric_sections COMMAND ${CMAKE_COMMAND}
+    -DDRIVER=$<TARGET_FILE:termscript-driver>
+    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_numeric_sections.tsc
+    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/numeric-section-test
+    -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+    "-DMARKER=numeric sections OK"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+  add_test(NAME termscript_numeric_failures COMMAND ${CMAKE_COMMAND}
+    -DDRIVER=$<TARGET_FILE:termscript-driver>
+    -DWORK=${CMAKE_CURRENT_BINARY_DIR}/numeric-failure-test
+    -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_numeric_failures.cmake)
+  set_tests_properties(termscript_numeric_sections termscript_numeric_failures PROPERTIES TIMEOUT 120)
+  add_executable(test_termscript_parser_reuse tests/test_termscript_parser_reuse.c)
+  target_link_libraries(test_termscript_parser_reuse PRIVATE termscript_standalone Threads::Threads)
+  add_test(NAME termscript_parser_reuse COMMAND test_termscript_parser_reuse)
+  set_tests_properties(termscript_parser_reuse PROPERTIES TIMEOUT 60)
   add_executable(test_termscript_cpp tests/test_termscript_cpp.cpp)
   target_compile_features(test_termscript_cpp PRIVATE cxx_std_17)
   target_link_libraries(test_termscript_cpp PRIVATE termscript_standalone)
   add_test(NAME termscript_cpp COMMAND test_termscript_cpp)
   if(TARGET termscript_stdlib)
+    if(UNIX AND NOT APPLE AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+      add_executable(test_termscript_numeric_alloc tests/test_termscript_numeric_alloc.c)
+      target_link_libraries(test_termscript_numeric_alloc PRIVATE termscript_stdlib)
+      target_compile_options(test_termscript_numeric_alloc PRIVATE -Wall -Wextra -Werror)
+      target_link_options(test_termscript_numeric_alloc PRIVATE
+        -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc -Wl,--wrap=strdup -Wl,--wrap=strndup)
+      add_test(NAME termscript_numeric_alloc COMMAND test_termscript_numeric_alloc)
+      set_tests_properties(termscript_numeric_alloc PROPERTIES TIMEOUT 30)
+    endif()
+    add_executable(test_termscript_numeric_stdlib tests/test_termscript_numeric.c)
+    target_compile_definitions(test_termscript_numeric_stdlib PRIVATE
+      TS_NUMERIC_STDLIB=1 TS_NUMERIC_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_numeric.tsc")
+    target_link_libraries(test_termscript_numeric_stdlib PRIVATE termscript_stdlib)
+    add_test(NAME termscript_numeric_stdlib COMMAND test_termscript_numeric_stdlib)
+    set_tests_properties(termscript_numeric_stdlib PROPERTIES TIMEOUT 60)
+    add_test(NAME termscript_numeric_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_numeric.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/numeric-backend-test
+      -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=finite numeric core OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    set_tests_properties(termscript_numeric_backends PROPERTIES TIMEOUT 60)
+    add_executable(test_termscript_stdio tests/test_termscript_stdio.c)
+    target_link_libraries(test_termscript_stdio PRIVATE termscript_stdlib)
+    add_test(NAME termscript_stdio COMMAND test_termscript_stdio)
+    set_tests_properties(termscript_stdio PROPERTIES TIMEOUT 10)
+    find_program(TS_REPLAY_NODE node)
+    find_program(TS_REPLAY_PYTHON python3)
+    find_program(TS_REPLAY_ASSEMBLER NAMES wasm-as wat2wasm)
+    if(TS_REPLAY_NODE AND TS_REPLAY_PYTHON AND TS_REPLAY_ASSEMBLER)
+      add_test(NAME replay_export_runtime COMMAND ${TS_REPLAY_PYTHON}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/replay_exports.py
+        $<TARGET_FILE:test_replay_export> ${TS_REPLAY_NODE} ${TS_REPLAY_ASSEMBLER}
+        $<TARGET_FILE:termscript-driver> ${CMAKE_CURRENT_BINARY_DIR}/replay-export-test
+        ${TERMSCRIPT_NATIVE} ${TERMSCRIPT_JITERATI})
+      set_tests_properties(replay_export_runtime PROPERTIES TIMEOUT 120)
+    endif()
     add_executable(test_termscript_infrastructure tests/test_termscript_infrastructure.c)
     target_link_libraries(test_termscript_infrastructure PRIVATE termscript_stdlib)
     add_test(NAME termscript_infrastructure COMMAND test_termscript_infrastructure)

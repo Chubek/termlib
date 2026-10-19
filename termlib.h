@@ -81,6 +81,10 @@ typedef struct DT_TermVM DT_TermVM;
 #define DT_TI_MAX_STACK (32u)           /* Max Terminfo parameter stack depth. */
 #define DT_TI_MAX_ENTRY (1u << 20)      /* Max compiled Terminfo entry bytes. */
 #define DT_RECORD_MAX_PAYLOAD (16u << 20) /* Max recording payload bytes. */
+#define DT_REPLAY_MAX_EVENTS 65536u
+#define DT_REPLAY_MAX_PAYLOAD                                                 \
+  (16u << 20) /* Aggregate exported payload bytes. */
+#define DT_REPLAY_MAX_SOURCE (128u << 20) /* Max generated source bytes. */
 #define DT_CONN_MAX_MESSAGE (4u << 20)  /* Max framed message payload bytes. */
 #define DT_ERROR_MSG_SIZE 256
 
@@ -549,9 +553,24 @@ void dt_replayer_pause (DT_Replayer *replayer);
 void dt_replayer_resume (DT_Replayer *replayer);
 /* Rewind to the first record (requires a seekable stream). */
 DT_Status dt_replayer_rewind (DT_Replayer *replayer, DT_Error *error);
-/* Render the recording as a replay program for `target`.  Borrowed
-   string, valid until the next compile call or replayer free.  The
-   generated program embeds the recorded events. */
+/* Render from the current stream position to EOF, independently of pacing
+   mode. Borrowed string, valid until the next successful compile or free;
+   failure returns NULL without replacing previous compiled text. Failure may
+   consume input; rewind explicitly before retrying. An invalid target does
+   not consume input. Bounded by DT_REPLAY_MAX_EVENTS, aggregate payload bytes
+   DT_REPLAY_MAX_PAYLOAD and generated source bytes DT_REPLAY_MAX_SOURCE.
+   The optional template replaces its first {{events}} with the WHOLE program;
+   without a placeholder it is prepended. Targets:
+   - TERMSCRIPT: unpaced output-only bytes through std.stdio.write_hex.
+   - JS: timed events (BigInt ns), Node stdout or caller event callbacks.
+   - WASM: WAT module with exported memory/replay and imported termlib.event
+     (type:i32, timestamp:i64, offset:i32, size:i32, rows:i32, columns:i32).
+     The host controls pacing and copies any bytes it needs to retain.
+   - WEBGPU: timed output storage-buffer uploads to a required consumer
+   callback; buffers are borrowed during the callback, destroyed after GPU
+   completion.
+   - MANIM/PROCESSING: paced UTF-8 text previews, not ANSI terminal emulators.
+   See manual/13-replay.md for host contracts and security limitations. */
 const char *dt_replayer_compile (DT_Replayer *replayer,
                                  const char *tmplate,
                                  DT_ReplayerTarget target);
@@ -636,6 +655,16 @@ void dt_localconn_options_init (DT_LocalConnOptions *options);
 DT_LocalConn *dt_localconn_open (const DT_LocalConnOptions *options,
                                  DT_Error *error);
 void dt_localconn_close (DT_LocalConn *connection); /* NULL-safe. */
+/* Framed I/O (also applies to remoteconn): timeout/would-block preserves
+   partial frames. After a retryable send, retry an envelope with identical
+   id/type/payload until DT_OK; another envelope returns INVALID_ARGUMENT.
+   The envelope is borrowed for each call; pending wire bytes are copied.
+   receive sets *envelope to NULL until a complete validated frame is ready.
+   EOF between frames is DT_ERR_EOF; EOF inside one is DT_ERR_PROTOCOL.
+   Truncation/invalid lengths shut down the connection; a fully consumed bad
+   checksum/type/resize frame reports PROTOCOL but permits the next frame.
+   Positive read/write timeouts bound one call, not the entire retry sequence.
+   Do not perform raw descriptor I/O while a frame is pending. */
 DT_Status dt_localconn_send (DT_LocalConn *connection,
                              const DT_Envelope *envelope, DT_Error *error);
 DT_Status dt_localconn_receive (DT_LocalConn *connection,
@@ -665,8 +694,10 @@ typedef struct
   uint32_t struct_size; /* Set by dt_remoteconn_options_init. */
   const char *host;     /* Borrowed, e.g. "127.0.0.1". */
   uint16_t port;
-  unsigned int connect_timeout_ms;
-  const char *auth_token; /* Borrowed bearer secret, NULL = none. */
+  unsigned int connect_timeout_ms; /* 0 = unlimited, otherwise <= INT_MAX.
+                                     Does not bound synchronous DNS lookup. */
+  const char *auth_token; /* Borrowed printable ASCII, no spaces/control bytes;
+                            maximum 995 bytes, NULL = none. */
   int read_timeout_ms;  /* < 0 blocks forever, 0 polls, > 0 waits. */
   int write_timeout_ms;
   int keepalive_ms;     /* Reserved; application drives pings. */
@@ -713,7 +744,8 @@ typedef enum
   DT_TERM_BOOL,
   DT_TERM_INT,
   DT_TERM_STRING,
-  DT_TERM_HANDLE /* Opaque native handle (e.g. terminfo profile). */
+  DT_TERM_HANDLE, /* Opaque native handle (e.g. terminfo profile). */
+  DT_TERM_FLOAT
 } DT_TermValueType;
 
 typedef struct DT_TermValue DT_TermValue;
@@ -724,6 +756,7 @@ struct DT_TermValue
   {
     bool boolean;
     int64_t integer;
+    double real;
     char *string; /* Owned when type == STRING (free with the value). */
     void *handle; /* Owned per module contract. */
   } as;
@@ -813,7 +846,8 @@ const char *dt_termscript_compile_backend (
   DT_TermVM *vm, const char *source,
   const DT_TermscriptCompileOptions *options, DT_Error *error);
 /* Compiled-code runtime for generated C (mirrors ts_rt_*; `line` feeds
- * error offsets).  dt_rt_set adopts *val on success. */
+ * error offsets). dt_rt_set adopts a converted payload copy on success and
+ * clears *val; the caller always owns val's storage. */
 DT_Status dt_rt_call (DT_TermVM *vm, const DT_TermValue *mod,
                       const char *modname, const char *func,
                       const DT_TermValue *argv, size_t argc,
@@ -823,6 +857,9 @@ DT_Status dt_rt_get (DT_TermVM *vm, const char *name, DT_TermValue *out,
 DT_Status dt_rt_set (DT_TermVM *vm, const char *name, DT_TermValue *val,
                      bool is_const, unsigned line, DT_Error *error);
 DT_Status dt_rt_step (DT_TermVM *vm, DT_Error *error);
+/* Finite binary64 constructor; initialize val to nil. Releases its old payload
+   only on success; NaN/infinity leave it unchanged. */
+DT_Status dt_rt_mkfloat (DT_TermValue *val, double number, DT_Error *error);
 DT_Status dt_rt_mkstring (DT_TermValue *val, const char *s,
                           DT_Error *error);
 bool dt_rt_truthy (const DT_TermValue *val);
@@ -838,6 +875,8 @@ DT_Status dt_rt_flow_leave (DT_TermVM *, DT_Status, DT_Error *);
 DT_Status dt_rt_field (DT_TermVM *, const char *, const char *, DT_TermValue *, unsigned, DT_Error *);
 DT_Status dt_rt_finish (DT_TermVM *, DT_Status, DT_Error *);
 /* Value helpers (DT_TERM_STRING payloads are heap copies). */
+/* Release payload and reset to nil; NULL-safe. Does not free value's storage.
+ */
 void dt_termvalue_free (DT_TermValue *value);
 DT_Status dt_termvalue_to_string (const DT_TermValue *value, char **out,
                                   DT_Error *error);

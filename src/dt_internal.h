@@ -9,17 +9,18 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <poll.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 /* Fill error with truncation-safe printf formatting. */
 static inline void
-dt_err_set (DT_Error *e, DT_Status code, int errn, size_t off,
-            const char *fmt, ...)
+dt_err_set (DT_Error *e, DT_Status code, int errn, size_t off, const char *fmt,
+            ...)
 {
   va_list ap;
   if (!e)
@@ -48,60 +49,84 @@ dt_xmalloc (size_t n)
 uint32_t dt_crc32 (const void *data, size_t len);
 uint32_t dt_crc32_update (uint32_t crc, const void *data, size_t len);
 
-/* Growable text buffer helpers (defined in dt_record.c). */
+/* Growable text buffer helpers (defined in dt_record.c). Input is borrowed and
+   must not overlap the output allocation. Initialize buf/len/cap to NULL/0/0.
+   Allocation/size failure frees the buffer, sets it to NULL and makes cap
+   SIZE_MAX (sticky failure); callers must never publish partial output. */
 void dt_buf_put (char **buf, size_t *len, size_t *cap, const char *s,
                  size_t n);
 void dt_buf_str (char **buf, size_t *len, size_t *cap, const char *s);
 
 /* Little-endian codecs. */
-static inline void dt_put_u16le (uint8_t *p, uint16_t v)
-{ p[0] = (uint8_t) v; p[1] = (uint8_t) (v >> 8); }
-static inline void dt_put_u32le (uint8_t *p, uint32_t v)
+static inline void
+dt_put_u16le (uint8_t *p, uint16_t v)
 {
-  p[0] = (uint8_t) v; p[1] = (uint8_t) (v >> 8);
-  p[2] = (uint8_t) (v >> 16); p[3] = (uint8_t) (v >> 24);
+  p[0] = (uint8_t)v;
+  p[1] = (uint8_t)(v >> 8);
 }
-static inline void dt_put_u64le (uint8_t *p, uint64_t v)
+static inline void
+dt_put_u32le (uint8_t *p, uint32_t v)
 {
-  dt_put_u32le (p, (uint32_t) v);
-  dt_put_u32le (p + 4, (uint32_t) (v >> 32));
+  p[0] = (uint8_t)v;
+  p[1] = (uint8_t)(v >> 8);
+  p[2] = (uint8_t)(v >> 16);
+  p[3] = (uint8_t)(v >> 24);
 }
-static inline uint16_t dt_get_u16le (const uint8_t *p)
-{ return (uint16_t) ((uint16_t) p[0] | ((uint16_t) p[1] << 8)); }
-static inline uint32_t dt_get_u32le (const uint8_t *p)
+static inline void
+dt_put_u64le (uint8_t *p, uint64_t v)
 {
-  return ((uint32_t) p[0] | ((uint32_t) p[1] << 8) |
-          ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24));
+  dt_put_u32le (p, (uint32_t)v);
+  dt_put_u32le (p + 4, (uint32_t)(v >> 32));
 }
-static inline uint64_t dt_get_u64le (const uint8_t *p)
+static inline uint16_t
+dt_get_u16le (const uint8_t *p)
 {
-  return ((uint64_t) dt_get_u32le (p) |
-          ((uint64_t) dt_get_u32le (p + 4) << 32));
+  return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
-static inline void dt_put_u32be (uint8_t *p, uint32_t v)
+static inline uint32_t
+dt_get_u32le (const uint8_t *p)
 {
-  p[0] = (uint8_t) (v >> 24); p[1] = (uint8_t) (v >> 16);
-  p[2] = (uint8_t) (v >> 8); p[3] = (uint8_t) v;
+  return ((uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16)
+          | ((uint32_t)p[3] << 24));
 }
-static inline uint32_t dt_get_u32be (const uint8_t *p)
+static inline uint64_t
+dt_get_u64le (const uint8_t *p)
 {
-  return (((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16) |
-          ((uint32_t) p[2] << 8) | (uint32_t) p[3]);
+  return ((uint64_t)dt_get_u32le (p) | ((uint64_t)dt_get_u32le (p + 4) << 32));
 }
-static inline void dt_put_u64be (uint8_t *p, uint64_t v)
+static inline void
+dt_put_u32be (uint8_t *p, uint32_t v)
 {
-  dt_put_u32be (p, (uint32_t) (v >> 32));
-  dt_put_u32be (p + 4, (uint32_t) v);
+  p[0] = (uint8_t)(v >> 24);
+  p[1] = (uint8_t)(v >> 16);
+  p[2] = (uint8_t)(v >> 8);
+  p[3] = (uint8_t)v;
 }
-static inline uint64_t dt_get_u64be (const uint8_t *p)
+static inline uint32_t
+dt_get_u32be (const uint8_t *p)
 {
-  return (((uint64_t) dt_get_u32be (p) << 32) | dt_get_u32be (p + 4));
+  return (((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16)
+          | ((uint32_t)p[2] << 8) | (uint32_t)p[3]);
+}
+static inline void
+dt_put_u64be (uint8_t *p, uint64_t v)
+{
+  dt_put_u32be (p, (uint32_t)(v >> 32));
+  dt_put_u32be (p + 4, (uint32_t)v);
+}
+static inline uint64_t
+dt_get_u64be (const uint8_t *p)
+{
+  return (((uint64_t)dt_get_u32be (p) << 32) | dt_get_u32be (p + 4));
 }
 
 /* Wait for fd readiness. events = POLLIN/POLLOUT. timeout_ms: <0 forever,
    0 poll, >0 wait. Returns 1 ready, 0 timeout, -1 error (errno set).
    EINTR is retried internally. */
 int dt_poll_wait (int fd, short events, int timeout_ms);
+/* Positive timeouts use one monotonic deadline, including EINTR retries. */
+int64_t dt_timeout_deadline (int timeout_ms);
+int dt_timeout_remaining (int timeout_ms, int64_t deadline);
 
 /* Transfer exactly `len` bytes with a poll-based timeout; handles EINTR
    internally and partial transfers. timeout_ms: <0 forever, 0 nonblocking
@@ -110,15 +135,20 @@ int dt_poll_wait (int fd, short events, int timeout_ms);
    (timeout_ms == 0 without progress), DT_ERR_SYSTEM (errno preserved in
    *errn when non-NULL), DT_ERR_CANCELLED (when cancelled flag set). */
 int dt_stream_read_full (int fd, void *buf, size_t len, int timeout_ms,
-                         const volatile int *cancelled, int *errn);
-int dt_stream_write_full (int fd, const void *buf, size_t len,
-                          int timeout_ms, const volatile int *cancelled,
-                          int *errn);
+                         const atomic_int *cancelled, int *errn);
+/* Like read_full, but retains the transferred byte count on every return.
+   Initialize *got to zero; retry with the same buffer and length. */
+int dt_stream_read_progress (int fd, void *buf, size_t len, size_t *got,
+                             int timeout_ms, const atomic_int *cancelled,
+                             int *errn);
+int dt_stream_write_full (int fd, const void *buf, size_t len, int timeout_ms,
+                          const atomic_int *cancelled, int *errn);
+int dt_stream_write_progress (int fd, const void *buf, size_t len,
+                              size_t *done, int timeout_ms,
+                              const atomic_int *cancelled, int *errn);
 
 /* Read one ASCII line (up to cap bytes incl. NUL) with timeout. */
-DT_Status dt_stream_read_line (int fd, char *buf, size_t cap,
-                               int timeout_ms,
-                               const volatile int *cancelled,
-                               DT_Error *error);
+DT_Status dt_stream_read_line (int fd, char *buf, size_t cap, int timeout_ms,
+                               const atomic_int *cancelled, DT_Error *error);
 
 #endif /* DT_INTERNAL_H */

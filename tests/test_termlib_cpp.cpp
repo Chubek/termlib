@@ -813,7 +813,7 @@ test_record_replay ()
     const std::string program
         = replayer.compile ("# header\n{{events}}", termlib::replay_target::termscript);
     CHECK (program.find ("# header") == 0);
-    CHECK (program.find ("G:puts") != std::string::npos);
+    CHECK (program.find ("write_hex") != std::string::npos);
   }
 
   std::fclose (stream);
@@ -1152,6 +1152,8 @@ native_double (DT_TermVM *, const DT_TermValue *argv, std::size_t argc,
       dt_error_set (error, DT_ERR_INVALID_ARGUMENT, 0, 0, "one argument");
       return DT_ERR_INVALID_ARGUMENT;
     }
+  if (argv[0].type == DT_TERM_FLOAT)
+    return dt_rt_mkfloat (ret, argv[0].as.real * 2.0, error);
   ret->type = DT_TERM_INT;
   ret->as.integer = argv[0].as.integer * 2;
   return DT_OK;
@@ -1186,6 +1188,23 @@ test_termscript ()
 
   /* Values. */
   termlib::term_value number = termlib::term_value::integer (21);
+  auto fractional = termlib::term_value::floating (1.25);
+  CHECK (fractional.type () == termlib::term_value_type::floating);
+  CHECK (fractional.as_float () == 1.25 && fractional.to_string () == "1.25");
+  vm.set ("fractional", std::move (fractional));
+  CHECK (vm.get ("fractional")->as_float () == 1.25);
+  CHECK (
+      vm.run (
+          "const NF = G:load(\"test.native\"); G:puts(NF:double(fractional));")
+      == "2.5\n");
+  DT_Error numeric_error{};
+  DT_TermValue protected_value{};
+  CHECK (dt_rt_mkstring (&protected_value, "preserved", &numeric_error) == DT_OK);
+  CHECK (dt_rt_mkfloat (&protected_value, std::numeric_limits<double>::infinity (), &numeric_error) == DT_ERR_INVALID_ARGUMENT);
+  CHECK (protected_value.type == DT_TERM_STRING && !std::strcmp (protected_value.as.string, "preserved"));
+  dt_termvalue_free (&protected_value);
+  DT_TermValue invalid_module{}, invalid_return{};
+  CHECK (dt_rt_call (vm.native_handle (), &invalid_module, "G", "puts", nullptr, 1, &invalid_return, 0, &numeric_error) == DT_ERR_INVALID_ARGUMENT);
   CHECK (number.type () == termlib::term_value_type::integer);
   CHECK (number.as_integer () == 21);
   CHECK (number.to_string () == "21");
