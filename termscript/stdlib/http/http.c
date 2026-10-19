@@ -298,6 +298,8 @@ h_url_parse (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
 }
 
 static const TS_FuncDef http_funcs[] = {
+  { "fetch", ts_http_fetch, NULL },
+  { "resolve", ts_http_resolve, NULL },
   { "get", h_get, NULL },
   { "status", h_status, NULL },
   { "headers", h_headers, NULL },

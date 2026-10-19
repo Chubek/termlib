@@ -63,6 +63,16 @@ runtime diagnostics use source lines in the offset slot.
   annotations are parsed as documentation, **not statically enforced**.
 - Module dot calls, ordinary function calls, nested expressions and module
   colon calls (including historical whitespace calls).
+- Literal `r#"..."#` strings preserve quotes, backslashes and newlines without
+  interpolation; exactly one hash delimiter is supported. Ordinary string
+  escape/embedded-NUL rules are unchanged.
+- Postfix read indexing on list/map expressions, including nested calls/literals
+  and chained reads (`records[0]["name"]`). Integer keys dispatch to registered
+  `std.list`, string keys to `std.map`; mismatched handles/types fail explicitly.
+  Missing keys/out-of-range indices return nil. Negative list indices count from
+  the end. Target and key evaluate left-to-right once; returned handles retain
+  aliases. Index writes, slices, string indexing and user-defined protocols are
+  not implemented. Lowering uses a shared runtime call for all four backends.
 - Decimal/hexadecimal int64 literals; checked arithmetic and string `+`;
   comparisons; bitwise operations; logical `and`/`or`; unary `!`, `not`, `-`.
 - Precedence, highest first: unary, `* / %`, `+ -`, shifts, bitwise AND/XOR/OR,
@@ -92,8 +102,8 @@ redefined to guess the meaning of the new examples' `catch`/`?` constructs.
 ## Remaining work
 
 The applications still require structs/enums/impl, match/patterns, ranges/for,
-closures, generics, interpolation/raw strings, destructuring, collection
-indexing/method protocols, optional/result propagation, defer, scheduling and
+closures, generics, interpolation, destructuring, collection
+write-indexing/slices/method protocols, optional/result propagation, defer, scheduling and
 substantial additional library APIs. Those are **not implemented**. Do not
 describe parsing a simple type annotation as a type checker.
 
@@ -130,6 +140,15 @@ and utf8proc helpers, standard C I/O and POSIX IPv4 sockets. UDP is unauthentica
 and unencrypted and must not be treated as secure remote collaboration.
 
 ## Regression coverage
+
+- `termscript_browser_core.tsc` and `test_termscript_browser_core.c`: raw strings,
+  chained/negative reads, evaluation order, missing entries, type/dependency
+  failures, returned resource aliases and cleanup on indexing errors. Parser
+  rejection cases live in `test_termscript_modern.c`.
+- `xw3m/` is a runnable Termscript browser prototype, not a w3m replacement.
+  `test_xw3m.py` verifies its navigation and the bounded `http.fetch` API across
+  all configured backends with loopback HTTP/TLS, including certificate/hostname
+  checks, downgrade rejection, size/truncation/timeout and terminal safety.
 
 - `test_termscript_modern.c`: backend descriptors, owned function trees, local
   resource destruction on return/error, recursion failure and VM reuse.

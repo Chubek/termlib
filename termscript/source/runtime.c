@@ -1284,6 +1284,49 @@ g_collection (TS_VM *vm, void *ud, const TS_Value *argv, size_t argc,
 }
 static const char ts_map_constructor;
 
+/* Index syntax lowers to a normal shared-runtime call, so all backends
+   preserve the ordinary left-to-right, once-only argument evaluation. */
+static TS_Status
+g_index (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *r,
+         TS_Error *e)
+{
+  (void)ud;
+  if (ts_check_argc (vm, a, n, 2, e) != TS_OK)
+    return TS_ERR_INVAL;
+  const char *name = a[1].type == TS_INT ? "std.list"
+                     : a[1].type == TS_STRING ? "std.map" : NULL;
+  if (!name)
+    {
+      ts_error_set (e, TS_ERR_INVAL, 0, 0,
+                    "index requires an integer list index or string map key");
+      return TS_ERR_INVAL;
+    }
+  const TS_Module *module = ts_vm_lookup (vm, name);
+  if (!module)
+    {
+      ts_error_set (e, TS_ERR_NOTFOUND, 0, 0,
+                    "indexing requires registered module '%s'", name);
+      return TS_ERR_NOTFOUND;
+    }
+  TS_Value args[2] = { a[0], a[1] };
+  if (a[1].type == TS_INT && a[1].as.integer < 0)
+    {
+      TS_Value len = { 0 };
+      TS_Status st = ts_collection_call (vm, module, "len", a, 1, &len, e);
+      if (st != TS_OK)
+        return st;
+      if (len.type != TS_INT || len.as.integer < 0)
+        {
+          ts_value_free (&len);
+          ts_error_set (e, TS_ERR_INVAL, 0, 0, "invalid list length");
+          return TS_ERR_INVAL;
+        }
+      args[1].as.integer += len.as.integer;
+      ts_value_free (&len);
+    }
+  return ts_collection_call (vm, module, "get", args, 2, r, e);
+}
+
 TS_Status
 ts_vm_set_args (TS_VM *vm, size_t argc, const char *const *argv,
                 TS_Error *error)
@@ -1450,7 +1493,8 @@ g_ne (TS_VM *vm, void *ud, const TS_Value *a, size_t n, TS_Value *r,
 }
 
 static const TS_FuncDef g_funcs[]
-    = { { "args", g_args, NULL },
+    = { { "__index", g_index, NULL },
+        { "args", g_args, NULL },
         { "float", g_float, NULL },
         { "int", g_int, NULL },
         { "__entry", g_entry, NULL },

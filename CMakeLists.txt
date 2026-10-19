@@ -212,6 +212,16 @@ static const char *const ts_driver_native_flags[] = {${TS_DRIVER_FLAGS} NULL};
 static const char *const ts_driver_static_flags[] = {${TS_DRIVER_STATIC_FLAGS} NULL};
 ")
 target_include_directories(termscript-driver PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+if(TARGET termscript_stdlib)
+  add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/bin/xw3m
+    COMMAND $<TARGET_FILE:termscript-driver>
+      -o ${CMAKE_CURRENT_BINARY_DIR}/bin/xw3m
+      ${CMAKE_CURRENT_SOURCE_DIR}/xw3m/xw3m.tsc
+    DEPENDS termscript-driver ${CMAKE_CURRENT_SOURCE_DIR}/xw3m/xw3m.tsc
+    COMMENT "Compiling the Termscript xw3m sample browser" VERBATIM)
+  add_custom_target(xw3m DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/bin/xw3m)
+  install(DIRECTORY xw3m/ DESTINATION ${CMAKE_INSTALL_DATADIR}/termscript/xw3m)
+endif()
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(termscript-driver PRIVATE -Wall -Wextra)
 endif()
@@ -320,6 +330,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_termscript_cpp PRIVATE termscript_standalone)
   add_test(NAME termscript_cpp COMMAND test_termscript_cpp)
   if(TARGET termscript_stdlib)
+    add_executable(test_termscript_browser_core tests/test_termscript_browser_core.c)
+    target_link_libraries(test_termscript_browser_core PRIVATE termscript_stdlib)
+    add_test(NAME termscript_browser_core COMMAND test_termscript_browser_core)
     if(UNIX AND NOT APPLE AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
       add_executable(test_termscript_numeric_alloc tests/test_termscript_numeric_alloc.c)
       target_link_libraries(test_termscript_numeric_alloc PRIVATE termscript_stdlib)
@@ -497,6 +510,34 @@ if(BUILD_TESTING)
       -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
       "-DMARKER=example-style core OK"
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    add_test(NAME termscript_browser_core_backends COMMAND ${CMAKE_COMMAND}
+      -DDRIVER=$<TARGET_FILE:termscript-driver>
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_browser_core.tsc
+      -DWORK=${CMAKE_CURRENT_BINARY_DIR}/browser-core-test
+      -DNATIVE=${TERMSCRIPT_NATIVE}
+      -DJITERATI=${TERMSCRIPT_JITERATI}
+      "-DMARKER=browser core OK"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    set_tests_properties(termscript_browser_core_backends PROPERTIES TIMEOUT 60)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND)
+      set(XW3M_TEST_FLAGS "")
+      if(TERMSCRIPT_NATIVE)
+        list(APPEND XW3M_TEST_FLAGS --native)
+      endif()
+      if(TERMSCRIPT_JITERATI)
+        list(APPEND XW3M_TEST_FLAGS --jit)
+      endif()
+      if(TERMSCRIPT_HTTP_TLS)
+        list(APPEND XW3M_TEST_FLAGS --tls)
+      endif()
+      add_test(NAME xw3m_offline COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_xw3m.py
+        --driver $<TARGET_FILE:termscript-driver>
+        --root ${CMAKE_CURRENT_SOURCE_DIR}
+        --work ${CMAKE_CURRENT_BINARY_DIR}/xw3m-test ${XW3M_TEST_FLAGS})
+      set_tests_properties(xw3m_offline PROPERTIES TIMEOUT 180)
+    endif()
   endif()
   add_test(NAME termscript_parser_regression COMMAND
     $<TARGET_FILE:termscript-driver>

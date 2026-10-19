@@ -5,9 +5,9 @@
 #include "common/ts_std_common.h"
 #include <string.h>
 static inline TS_Value ts_arg_int (int64_t x)
-{ TS_Value v = {0}; v.type = TS_INT; v.as.integer = x; return v; }
+{ TS_Value v = {TS_NIL, {false}}; v.type = TS_INT; v.as.integer = x; return v; }
 static inline TS_Value ts_arg_str (const char *s)
-{ TS_Value v = {0}; v.type = TS_STRING; v.as.string = (char *) s; return v; }
+{ TS_Value v = {TS_NIL, {false}}; v.type = TS_STRING; v.as.string = (char *) s; return v; }
 static inline TS_Status
 ts_module_call (TS_VM *vm, const TS_Module *m, const char *name,
                 const TS_Value *a, size_t n, TS_Value *r, TS_Error *e)
@@ -19,7 +19,7 @@ ts_module_call (TS_VM *vm, const TS_Module *m, const char *name,
 }
 static inline int64_t ts_doc_int (const ts_dom_t *d, const char *key)
 {
-  TS_Value v = {0}; int64_t x = 0;
+  TS_Value v = {TS_NIL, {false}}; int64_t x = 0;
   const ts_dom_t *field = ts_dom_path (d, key);
   if (field && !ts_dom_to_value (field, &v, NULL) && v.type == TS_INT) x = v.as.integer;
   ts_value_free (&v); return x;

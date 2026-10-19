@@ -6,7 +6,7 @@ The application examples target richer APIs than the existing modules expose.
 
 Hybrid libraries. Each one is two halves:
 
-- **Native module** (`<name>/<name>.c`, or C++20 for `shell`, module `std.<name>`) — owns
+- **Native module** (`<name>/<name>.c`, with C++ adapters for `shell` and HTTP fetch, module `std.<name>`) — owns
   storage, parsing, syscalls and handles, written against
   `termscript.h` plus `common/ts_std_common.h`.
 - **Termscript companion** (`<name>/<name>.tsc`) — loaded with
@@ -24,6 +24,12 @@ G:puts(second);
 ```
 
 ## Module index
+
+`std.utf8.terminal_safe(text)` is a display-boundary helper: it replaces invalid
+UTF-8 and removes C0 controls except LF/TAB, DEL/C1, directional marks and bidi
+embedding/override/isolate controls. It returns an owned string and shares the
+1 MiB input limit and serialization policy of `sanitize`. It does not interpret
+or generate ANSI escapes and is not a general Unicode spoofing defense.
 
 | Companion | Native module | Contents |
 |---|---|---|
@@ -55,7 +61,7 @@ G:puts(second);
 | `fsm` | `std.fsm` | table-driven finite state machines |
 | `glob` | `std.glob` | fnmatch matching, directory glob, quoting |
 | `grammar` | `std.grammar` | bounded scannerless GLR descriptor builder, explicit ambiguity policy ([contracts](parser-modules.md)) |
-| `http` | `std.http` | minimal HTTP/1.0 GET/POST/status/headers/url_parse (no TLS by policy) |
+| `http` | `std.http` | bounded HTTP(S) fetch and WHATWG URL resolution; legacy HTTP-only calls ([contracts](http/README.md)) |
 | `input` | `std.input` | bounded incremental terminal key/mouse/paste framing ([contracts](new-modules.md#incremental-input-and-font-shaping)) |
 | `font_shape` | `std.font_shape` | shared font handles and HarfBuzz glyph shaping ([contracts](new-modules.md#incremental-input-and-font-shaping)) |
 | `io` | `std.io` | whole-file read/write/append, exists/size/remove/rename/mkdir/lines |

@@ -16,6 +16,8 @@ specification or evidence that its application runs.
   strings and reference-counted native handles. Integers can be decimal or hex;
   floats use decimal fractions/exponents. Strings have the supported C-like
   escapes, including nonzero `\xHH`; embedded NUL is rejected.
+  Raw `r#"..."#` strings preserve quotes, backslashes and newlines literally;
+  exactly one hash delimiter is supported, with no interpolation.
 - Expressions support parentheses, checked arithmetic, comparisons, bitwise
   operators/shifts and unary negation/not. `and`/`or` short-circuit and return an
   operand. Arguments and operands evaluate left-to-right once.
@@ -30,6 +32,10 @@ specification or evidence that its application runs.
 - `use` binds registered `std.*` modules. List and map literals use the existing
   native adapters; they require the standard library, not an implicit new value
   representation or collection method protocol.
+- List/map expressions support chained read indexing: `items[-1]["name"]`.
+  Negative list indices count from the end; out-of-range/missing entries return
+  nil. Only integer list indices/string map keys are supported, not string
+  indexing, slices or index assignments. Both operands evaluate once in order.
 - Section declarations, aliases/defines, `config`, `lifetime` and the legacy flow
   operators are implemented and covered by section/cleanup conformance tests.
   `~>` observes failure, `->` follows the error observer and `=>` observes
@@ -60,7 +66,7 @@ the required native ABI-v2 rebuild.
 ## Implementation boundary
 
 Structs/enums/impl, pattern matching, first-class ranges/for loops, closures,
-generic type checking, interpolation, destructuring, collection indexing/method
+generic type checking, interpolation, destructuring, collection write-indexing/method
 protocols, `?`/`catch`, defer and structured scheduling remain roadmap work.
 The large `coedit`, `flashbench`, `kmsterm`, `tmx` and `tsh` applications are
 illustrative, not runnable feature claims.

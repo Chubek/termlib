@@ -6,7 +6,11 @@
 - A C11 compiler and linker, plus a C++20 compiler for the full standard library.
 - Perl, used to generate the Termscript parser.
 - POSIX threads.
+- OpenSSL 3 development files and system CA roots for `std.http.fetch` HTTPS
+  (disable with `-DTERMSCRIPT_HTTP_TLS=OFF`; HTTPS then fails explicitly).
 - The vendored third-party sources under `third_party/tomlc99`, `third_party/isocline`, `third_party/lexbor`, and `third_party/libshell` for the full standard library.
+- Vendored `third_party/cpp-httplib` for bounded HTTP fetching. The offline
+  browser tests also require Python 3 and the `openssl` CLI when TLS is enabled.
 
 The core libraries can still be built with `-DDOMWEAVE_BUILD_TERMSCRIPT_STDLIB=OFF` when the optional standard-library sources are unavailable.
 

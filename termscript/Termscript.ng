@@ -10,6 +10,7 @@
 %token NUMBER /-?(0[xX][0-9a-fA-F]+|0|[1-9][0-9]*)/;
 %token FLOAT /-?((0|[1-9][0-9]*)\.[0-9]+([eE][+-]?[0-9]+)?|(0|[1-9][0-9]*)[eE][+-]?[0-9]+)/;
 %token STRING /"([^"\\]|\\.)*"/;
+%token RAW_STRING /r#"([^"]|"[^#])*"#/;
 # Scannerless disambiguation must not consume a block terminator as a name,
 # then close the block at the "end" substring in a later method like render.
 # This POSIX ERE excludes exact keywords (no lookahead). Reproduce with
@@ -123,7 +124,11 @@ unary: "&" name => RefExpr
      | "not" gap unary => NotExpr
      | "!" unary => NotExpr
      | "-" unary => NegExpr
-     | "(" layout expr layout ")" => GroupExpr
+     | postfix => Expr;
+
+postfix: postfix layout "[" layout expr layout "]" => IndexExpr
+       | primary => Expr;
+primary: "(" layout expr layout ")" => GroupExpr
      | name layout "->" IDENT => FieldExpr
      | ":" WORD => SymbolExpr
      | "[" layout arg_list layout "]" => ListExpr
@@ -134,7 +139,8 @@ unary: "&" name => RefExpr
      | name => IdentExpr
       | NUMBER => NumberExpr
       | FLOAT => FloatExpr
-     | STRING => StringExpr;
+      | STRING => StringExpr
+      | RAW_STRING => RawStringExpr;
 
 call: name layout ":" layout function_name call_args => Call
     | name layout "." layout WORD layout "(" layout arg_list? layout ")" => DotCall
@@ -150,6 +156,7 @@ call_args: (gap arg)* => SpaceArgs
 arg_list: expr (layout "," layout expr)* layout ","? => ArgList;
 
 arg: STRING => ArgString
+    | RAW_STRING => ArgRawString
     | NUMBER => ArgNumber
     | FLOAT => ArgFloat
    | "&" name => ArgRef

@@ -10,6 +10,8 @@ Termlib is a portable terminal systems library written in C11. It provides PTY a
 - **`libtermscript_stdlib`** — native standard modules and `.tsc` companion modules.
 - **`termscript`** — command-line interpreter and ahead-of-time C/QBE compiler.
 - **`termlib.hpp`** — header-only C++11 RAII wrappers for the C API.
+- **[`xw3m`](xw3m/)** — runnable Termscript terminal-browser prototype with
+  verified HTTPS, tabs/history, search and dump mode; not yet a w3m replacement.
 
 ## Quick start
 

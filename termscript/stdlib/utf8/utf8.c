@@ -152,7 +152,6 @@ u_sanitize (TS_VM *vm, void *ud, const TS_Value *a, size_t n,
   size_t at = 0, len;
   ts_sbuf_t b;
   int32_t cp;
-  (void) ud;
   if (ts_std_argc (vm, n, 1, 1, e, "sanitize") || ts_std_str (a, &s, e, "sanitize"))
     return TS_ERR_INVAL;
   len = strlen (s);
@@ -161,6 +160,12 @@ u_sanitize (TS_VM *vm, void *ud, const TS_Value *a, size_t n,
   while (at < len)
     {
       int r = ts_utf8_decode (s + at, len - at, &cp);
+      if (ud && r > 0 && ((cp < 32 && cp != '\n' && cp != '\t') ||
+                         (cp >= 127 && cp <= 159) || cp == 0x061c ||
+                         cp == 0x200e || cp == 0x200f ||
+                         (cp >= 0x202a && cp <= 0x202e) ||
+                         (cp >= 0x2066 && cp <= 0x2069)))
+        { at += (size_t) r; continue; }
       if (ts_sbuf_put (&b, r < 0 ? "\xef\xbf\xbd" : s + at, r < 0 ? 3 : (size_t) r))
         { ts_sbuf_free (&b); return ts_std_oom (e); }
       at += r < 0 ? 1 : (size_t) r;
@@ -175,5 +180,6 @@ static const TS_FuncDef funcs[] = {
   {"slice", u_slice, NULL}, {"graphemes", u_graphemes, NULL},
   {"reverse", u_graphemes, (void *) 1}, {"normalize", u_normalize, NULL},
   {"casefold", u_normalize, (void *) 1}, {"sanitize", u_sanitize, NULL},
+  {"terminal_safe", u_sanitize, (void *) 1},
 };
 const TS_Module ts_std_utf8_module = TS_MODULE_INIT ("std.utf8", funcs);

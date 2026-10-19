@@ -2,6 +2,9 @@
 
 - **Runnable:** `core.tsc` exercises the currently implemented function,
   expression, import and entry-point subset.
+- **Runnable:** [`../../xw3m/`](../../xw3m/) contains a terminal browser prototype
+  using raw strings and read indexing. It is not a claim of full application
+  example compatibility or superiority to w3m.
 - **Runnable:** `crdt.tsc` demonstrates concurrent native RGA editing,
   out-of-order delta delivery, convergence and snapshot recovery, without a
   network or external CRDT dependency.

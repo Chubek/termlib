@@ -1,0 +1,55 @@
+use http, env, utf8
+fn check(value) { if !value { G:die("HTTP fetch assertion failed") } }
+fn main() {
+    let base = env.get("XW3M_TEST_HTTP")
+    check(base != nil)
+    check(http.resolve("https://example.org/a/b", "../c?q=1#top") == "https://example.org/c?q=1#top")
+    check(http.resolve("https://example.org/a", "//other.example/b") == "https://other.example/b")
+    check(http.resolve("", "javascript:alert(1)") == nil)
+    check(http.resolve("", "file:///etc/passwd") == nil)
+    check(http.resolve("", "https://user:secret@example.org/") == nil)
+    check(http.resolve("", "http://example.org/\r\ninjected") == nil)
+    let good = http.fetch(base + "/ok")
+    check(good->ok and good->status == 200 and good->body == "<h1>local HTTP works</h1>")
+    let chunked = http.fetch(base + "/chunked")
+    check(chunked->ok and chunked->body == "hello world")
+    let redirect = http.fetch(base + "/redirect")
+    check(redirect->ok and redirect->status == 302 and redirect->location == "/ok")
+    let missing = http.fetch(base + "/missing")
+    check(missing->ok and missing->status == 404)
+    let big = http.fetch(base + "/large", 2000, 10)
+    check(!big->ok and big->body == "" and big->error == "response body exceeds limit")
+    let zero = http.fetch(base + "/ok", 2000, 0)
+    check(!zero->ok)
+    let binary = http.fetch(base + "/binary")
+    check(!binary->ok and binary->body == "")
+    let short = http.fetch(base + "/truncated")
+    check(!short->ok and short->body == "")
+    let encoded = http.fetch(base + "/encoded")
+    check(!encoded->ok)
+    let slow = http.fetch(base + "/slow", 50)
+    check(!slow->ok)
+    let unsafe = http.fetch("ftp://example.org/")
+    check(!unsafe->ok)
+    if env.get("XW3M_TEST_NO_TLS") {
+        let disabled = http.fetch("https://127.0.0.1:1/")
+        check(!disabled->ok and disabled->error == "HTTPS support disabled at build time")
+    }
+    let tls = env.get("XW3M_TEST_TLS")
+    if tls {
+        let rejected = http.fetch(tls)
+        check(!rejected->ok and rejected->body == "")
+    }
+    let trusted = env.get("XW3M_TEST_TRUSTED_TLS")
+    if trusted {
+        let accepted = http.fetch(trusted + "/ok")
+        check(accepted->ok and accepted->status == 200)
+        let bad_host = env.get("XW3M_TEST_BAD_HOST_TLS")
+        let rejected_host = http.fetch(bad_host)
+        check(!rejected_host->ok and rejected_host->body == "")
+    }
+    check(utf8.terminal_safe("a\x1b[31m\x07b\n\t") == "a[31mb\n\t")
+    check(utf8.terminal_safe("a" + utf8.char(155) + utf8.char(8238) + "b") == "ab")
+    check(utf8.terminal_safe("a\x01b") == "ab")
+    print("HTTP fetch OK")
+}

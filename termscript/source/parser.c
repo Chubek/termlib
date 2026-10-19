@@ -202,13 +202,15 @@ ts_np_is_expr_node (const np_node *node)
          || ts_np_is (node, "AndExpr") || ts_np_is (node, "BitOrExpr")
          || ts_np_is (node, "BitXorExpr") || ts_np_is (node, "BitAndExpr")
          || ts_np_is (node, "NegExpr") || ts_np_is (node, "DotCall")
-         || ts_np_is (node, "InvokeCall");
+          || ts_np_is (node, "InvokeCall") || ts_np_is (node, "IndexExpr")
+          || ts_np_is (node, "RawStringExpr");
 }
 
 static bool
 ts_np_is_arg_node (const np_node *node)
 {
   return ts_np_is (node, "ArgString") || ts_np_is (node, "ArgNumber")
+         || ts_np_is (node, "ArgRawString")
          || ts_np_is (node, "ArgFloat") || ts_np_is (node, "ArgRef")
          || ts_np_is (node, "ArgWord") || ts_np_is (node, "ArgSymbol");
 }
@@ -275,6 +277,11 @@ ts_np_arg (const np_node *node, const char *input)
 {
   const np_node *tok;
   unsigned line = ts_np_line (node, input);
+  if (ts_np_is (node, "ArgRawString"))
+    {
+      void *value = ts_np_expr (node, input);
+      return value ? ts_mk_argexpr (value) : NULL;
+    }
   if (ts_np_is (node, "ArgFloat"))
     {
       void *value = ts_np_float (ts_np_first (node, "FLOAT"), line);
@@ -451,6 +458,46 @@ ts_np_expr (const np_node *node, const char *input)
       || ts_np_is (node, "GroupExpr"))
     return ts_np_expr (ts_np_first_expr (node), input);
   line = ts_np_line (node, input);
+  if (ts_np_is (node, "IndexExpr"))
+    {
+      void *value = NULL;
+      for (size_t i = 0; i < np_node_child_count (node); i++)
+        {
+          const np_node *ch = np_node_child (node, i);
+          if (!ts_np_is_expr_node (ch))
+            continue;
+          void *part = ts_np_expr (ch, input);
+          if (!part)
+            return NULL;
+          value = value ? ts_np_builtin ("__index", value, part, line) : part;
+          if (!value)
+            return NULL;
+        }
+      return value;
+    }
+  if (ts_np_is (node, "RawStringExpr") || ts_np_is (node, "ArgRawString"))
+    {
+      tok = ts_np_first (node, "RAW_STRING");
+      if (!tok)
+        return NULL;
+      const char *s = np_node_text (tok);
+      size_t n = np_node_text_length (tok), at = 0;
+      /* Reuse the existing checked string decoder; quote only slash/quote.
+         Raw contents are not interpolated or escape-decoded. */
+      char *quoted = ts_parse_alloc (n * 2 + 3);
+      if (!quoted)
+        return NULL;
+      quoted[at++] = '"';
+      for (size_t i = 3; i + 2 < n; i++)
+        {
+          if (s[i] == '\\' || s[i] == '"')
+            quoted[at++] = '\\';
+          quoted[at++] = s[i];
+        }
+      quoted[at++] = '"';
+      quoted[at] = 0;
+      return ts_mk_string (quoted, line);
+    }
   if (ts_np_is (node, "BinaryExpr") || ts_np_is (node, "BitOrExpr")
       || ts_np_is (node, "BitXorExpr") || ts_np_is (node, "BitAndExpr")
       || ts_np_is (node, "AndExpr"))
@@ -497,6 +544,8 @@ ts_np_expr (const np_node *node, const char *input)
   if (ts_np_is (node, "NegExpr"))
     {
       const np_node *operand = ts_np_first_expr (node);
+      while (ts_np_is (operand, "Expr"))
+        operand = ts_np_first_expr (operand);
       const np_node *number = ts_np_is (operand, "NumberExpr")
                                   ? ts_np_first (operand, "NUMBER")
                                   : NULL;

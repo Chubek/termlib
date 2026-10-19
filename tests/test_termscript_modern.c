@@ -85,6 +85,16 @@ main (void)
          == TS_ERR_INVAL);
   CHECK (ts_check_syntax ("fn main(a, b) {}", &error) == TS_ERR_INVAL);
   CHECK (ts_check_syntax ("let x = (1 + )", &error) == TS_ERR_PARSE);
+  CHECK (ts_check_syntax ("print(r#\"unterminated\")", &error) == TS_ERR_PARSE);
+  CHECK (ts_check_syntax ("print(a[])", &error) == TS_ERR_PARSE);
+  CHECK (ts_check_syntax ("print(a[0)", &error) == TS_ERR_PARSE);
+  CHECK (ts_check_syntax ("print(a[1,2])", &error) == TS_ERR_PARSE);
+  CHECK (ts_vm_run_string (vm, "print(x[0])", NULL, &error)
+         == TS_ERR_NOTFOUND);
+  CHECK (ts_vm_run_string (vm, "print(1[0])", NULL, &error)
+         == TS_ERR_NOTFOUND); /* No registered collection adapter. */
+  CHECK (ts_vm_run_string (vm, "print(1[true])", NULL, &error)
+         == TS_ERR_INVAL);
   CHECK (ts_check_syntax ("while false do end\nModule:render(1);", &error)
          == TS_OK);
   CHECK (ts_check_syntax ("print(-9223372036854775809)", &error)

@@ -1,0 +1,270 @@
+# xw3m: browser policy, document presentation, tabs and navigation in Termscript.
+# No shell commands, external browser, JavaScript or automatic subresource loads.
+use http, html, list, map, io, stdio, codec, utf8, regex, text_search
+
+const HOME = r#"<!doctype html><title>xw3m</title>
+<h1>xw3m — the Termscript browser</h1>
+<p>Open an HTTPS URL or a local HTML file with o ADDRESS.</p>
+<p>j/k: page down/up; g NUMBER: follow a link; b/f: back/forward;
+t ADDRESS: new tab; [/]: previous/next tab; /TEXT: find; n: next match;
+r: reload; v: source; s FILE: save source; q: quit; ?: help.</p>
+<p>No JavaScript, tracking pixels or automatic network subresources.</p>"#
+const HELP = r#"xw3m [--dump] [--width 20..240] [ADDRESS]
+Interactive commands (press Enter after each):
+  o ADDRESS  open HTTPS/HTTP URL, local HTML path, or about:home
+  g NUMBER   follow numbered link       j/k   page down/up
+  b/f        history back/forward       r     reload
+  t ADDRESS  new tab                    [/]   previous/next tab
+  /TEXT      literal, case-folded find  n     next matching line (wraps)
+  v          toggle source view         s FILE  save original source
+  ?          help                       q     quit (EOF also quits)
+--dump renders plain text and numbered links without reading stdin.
+HTTP is unencrypted. HTTPS verifies certificates and hostnames.
+Prototype: no forms, JavaScript, images, downloads or cookie storage.
+"#
+
+fn say(text) { stdio.write(text + "\n"); stdio.flush() }
+fn safe(text) { return utf8.terminal_safe(text) }
+fn label(text) { return regex.replace("[\n\t]+", safe(text), " ") }
+fn starts(text, prefix) { return utf8.slice(text, 0, utf8.len(prefix)) == prefix }
+fn is_web(address) { return regex.search("^[Hh][Tt][Tt][Pp][Ss]?://", address) }
+fn decimal(text) {
+    # Callers first validate at most four ASCII digits; arithmetic is bounded.
+    var value = 0
+    var i = 0
+    while i < utf8.len(text) {
+        value = value * 10 + utf8.codepoint(text, i) - 48
+        i += 1
+    }
+    return value
+}
+
+fn fetch_page(address) {
+    if address == "about:home" { return [address, HOME] }
+    if is_web(address) {
+        var url = http.resolve("", address)
+        if !url { say("Invalid URL"); return nil }
+        var hops = 0
+        while hops < 6 {
+            var response = http.fetch(url)
+            if !response->ok { say("Network error: " + label(response->error)); return nil }
+            var status = response->status
+            if status == 301 or status == 302 or status == 303 or status == 307 or status == 308 {
+                var next = http.resolve(url, response->location)
+                if !next or response->location == "" { say("Invalid redirect"); return nil }
+                if starts(url, "https://") and starts(next, "http://") {
+                    say("Refusing HTTPS to HTTP downgrade"); return nil
+                }
+                url = next
+                hops += 1
+            } else {
+                if status < 200 or status >= 300 {
+                    say("HTTP status " + G:concat("", status)); return nil
+                }
+                var type = response->content_type
+                if type != "" and !starts(type, "text/html") and !starts(type, "text/plain") and !starts(type, "application/xhtml+xml") {
+                    say("Unsupported content type: " + label(type)); return nil
+                }
+                var source = response->body
+                if starts(type, "text/plain") { source = "<pre>" + html.escape(source) + "</pre>" }
+                return [url, source]
+            }
+        }
+        say("Redirect limit exceeded"); return nil
+    }
+    # Never interpret an unsupported URL scheme as a local file.
+    if regex.search("^[A-Za-z][A-Za-z0-9+.-]*:", address) {
+        say("Unsupported address scheme"); return nil
+    }
+    let source = io.read(address)
+    if source == nil { say("Cannot read local file: " + label(address)); return nil }
+    return [address, source]
+}
+
+fn link_address(base, href) {
+    if is_web(base) { return http.resolve(base, href) }
+    if is_web(href) { return http.resolve("", href) }
+    if regex.search("^[A-Za-z][A-Za-z0-9+.-]*:", href) { return nil }
+    if starts(href, "#") or href == "" { return base }
+    let path = regex.replace("#.*$", href, "")
+    if starts(path, "/") { return path }
+    return (regex.find("^.*/", base) or "") + path
+}
+
+fn document(address, source, width) {
+    let dom = html.parse(utf8.sanitize(source))
+    let title_node = html.query(dom, "title")
+    var title = address
+    if title_node { title = label(html.text(title_node)) }
+    var base = address
+    let base_node = html.query(dom, "base[href]")
+    if base_node and is_web(address) {
+        base = http.resolve(address, html.attr(base_node, "href")) or address
+    }
+    let nodes = html.query_all(dom, "a[href]")
+    let links = []
+    var index = 0
+    # Bound link list/UI work independently of the HTML input size.
+    while index < list.len(nodes) and index < 1000 {
+        var node = nodes[index]
+        var target = link_address(base, html.attr(node, "href"))
+        if target {
+            list.push(links, [label(html.text(node)), target])
+        }
+        index += 1
+    }
+    let rendered = html.render(dom, width, false)
+    # Metadata and rendered HTML both cross the same terminal-safe boundary.
+    return {"url": address, "source": source, "title": title,
+            "text": rendered, "lines": codec.split(safe(rendered), "\n"),
+            "links": links, "top": 0, "needle": "", "source_view": false}
+}
+
+fn open_page(tab, address, width, record) {
+    let fetched = fetch_page(address)
+    if !fetched { return false }
+    let page = document(fetched[0], fetched[1], width)
+    # Publish only after the new document is complete; old page survives failure.
+    map.set(tab, "page", page)
+    if record {
+        let history = tab["history"]
+        while list.len(history) > tab["cursor"] + 1 { list.pop(history) }
+        if list.len(history) >= 128 { list.clear(history) }
+        list.push(history, fetched[0])
+        map.set(tab, "cursor", list.len(history) - 1)
+    }
+    return true
+}
+
+fn new_tab(address, width) {
+    let tab = {"history": [], "cursor": -1, "page": nil}
+    if !open_page(tab, address, width, true) { return nil }
+    return tab
+}
+
+fn show_links(page) {
+    let links = page["links"]
+    var i = 0
+    while i < list.len(links) {
+        var link = links[i]
+        say("[" + G:concat("", i + 1) + "] " + link[0] + " — " + label(link[1]))
+        i += 1
+    }
+}
+
+fn display(tab, active, count, dump) {
+    let page = tab["page"]
+    if dump {
+        say(safe(page["text"]))
+        show_links(page)
+        return
+    }
+    say("\n== xw3m | tab " + G:concat("", active + 1) + "/" + G:concat("", count) + " | " + page["title"] + " ==")
+    say(label(page["url"]))
+    let lines = page["lines"]
+    let top = page["top"]
+    var i = top
+    while i < list.len(lines) and i < top + 20 {
+        say(lines[i])
+        i += 1
+    }
+    say("-- lines " + G:concat("", top + 1) + "-" + G:concat("", i) + "/" + G:concat("", list.len(lines)) + " --")
+    show_links(page)
+}
+
+fn find_line(page, query, start) {
+    let lines = page["lines"]
+    let needle = utf8.casefold(query)
+    if needle == "" { return }
+    var i = 0
+    while i < list.len(lines) {
+        var at = (start + i) % list.len(lines)
+        if text_search.find(utf8.casefold(lines[at]), needle) != nil {
+            map.set(page, "top", at)
+            map.set(page, "needle", query)
+            return
+        }
+        i += 1
+    }
+    say("No match: " + label(query))
+}
+
+fn main(args) {
+    var address = "about:home"
+    var width = 80
+    var dump = false
+    var i = 0
+    while i < list.len(args) {
+        var arg = args[i]
+        if arg == "--help" { say(HELP); return 0 }
+        if arg == "--dump" { dump = true } else {
+            if arg == "--width" {
+                i += 1
+                if i >= list.len(args) or !regex.full("[0-9]{1,3}", args[i]) { say(HELP); return 2 }
+                width = decimal(args[i])
+                if width < 20 or width > 240 { say(HELP); return 2 }
+            } else {
+                if starts(arg, "--") { say(HELP); return 2 }
+                address = arg
+            }
+        }
+        i += 1
+    }
+    let first = new_tab(address, width)
+    if !first { return 1 }
+    let tabs = [first]
+    var active = 0
+    if dump { display(first, 0, 1, true); return 0 }
+    while true {
+        var tab = tabs[active]
+        var page = tab["page"]
+        display(tab, active, list.len(tabs), false)
+        stdio.write("xw3m> "); stdio.flush()
+        var command = stdio.read_line()
+        if command == nil or command == "q" { return 0 }
+        if command == "?" { say(HELP) }
+        if command == "j" or command == "" { map.set(page, "top", min(page["top"] + 20, max(0, list.len(page["lines"]) - 1))) }
+        if command == "k" { map.set(page, "top", max(0, page["top"] - 20)) }
+        if command == "[" { active = (active + list.len(tabs) - 1) % list.len(tabs) }
+        if command == "]" { active = (active + 1) % list.len(tabs) }
+        if command == "r" { open_page(tab, page["url"], width, false) }
+        if command == "b" or command == "f" {
+            var cursor = tab["cursor"] - 1
+            if command == "f" { cursor = tab["cursor"] + 1 }
+            if cursor >= 0 and cursor < list.len(tab["history"]) {
+                var history = tab["history"]
+                if open_page(tab, history[cursor], width, false) { map.set(tab, "cursor", cursor) }
+            } else { say("No history in that direction") }
+        }
+        if starts(command, "o ") { open_page(tab, utf8.slice(command, 2), width, true) }
+        if starts(command, "t ") {
+            if list.len(tabs) >= 16 { say("Tab limit: 16") } else {
+                var added = new_tab(utf8.slice(command, 2), width)
+                if added { list.push(tabs, added); active = list.len(tabs) - 1 }
+            }
+        }
+        if starts(command, "g ") {
+            var number = utf8.slice(command, 2)
+            if regex.full("[0-9]{1,4}", number) {
+                var index = decimal(number) - 1
+                var links = page["links"]
+                if index >= 0 and index < list.len(links) {
+                    var link = links[index]
+                    open_page(tab, link[1], width, true)
+                } else { say("No such link") }
+            } else { say("Use g NUMBER") }
+        }
+        if starts(command, "/") { find_line(page, utf8.slice(command, 1), 0) }
+        if command == "n" { find_line(page, page["needle"], page["top"] + 1) }
+        if command == "v" {
+            map.set(page, "source_view", !page["source_view"])
+            var text = page["text"]
+            if page["source_view"] { text = page["source"] }
+            map.set(page, "lines", codec.split(safe(text), "\n"))
+            map.set(page, "top", 0)
+        }
+        if starts(command, "s ") {
+            if io.write(utf8.slice(command, 2), page["source"]) { say("Saved") } else { say("Save failed") }
+        }
+    }
+}

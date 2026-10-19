@@ -1,0 +1,28 @@
+# Raw source strings and postfix collection reads, shared across backends.
+use list, map
+fn check(value) { if !value { G:die("browser core assertion failed") } }
+fn once(log, value) { list.push(log, value); return value }
+fn main() {
+    let raw = r#"<a href="next">\n # literal
+second line</a>"#
+    check(raw == "<a href=\"next\">\\n # literal\nsecond line</a>")
+    check(r#""# == "")
+    check(r#"one"# + r#"two"# == "onetwo")
+    check(r#"\x00"# == "\\x00")
+    G:puts r#"raw whitespace argument"#
+    let a = [[7, 8], [9, 10]]
+    check(a[1][0] == 9)
+    check((a[0])[-1] == 8)
+    check(a[-2][-2] == 7)
+    check(a[-3] == nil)
+    check(a[-9223372036854775808] == nil)
+    check(a[2] == nil)
+    let m = {"answer": a, "empty": nil}
+    check(m["answer"][0][0] == 7)
+    check(m["missing"] == nil)
+    let trace = []
+    check(once(trace, a)[once(trace, 1)][once(trace, 0)] == 9)
+    check(list.len(trace) == 3)
+    check(trace[1] == 1 and trace[2] == 0)
+    print("browser core OK")
+}
