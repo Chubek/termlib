@@ -61,6 +61,7 @@ static const TS_Module *const stdlib_modules[] = {
   &ts_std_syntax_module,
   &ts_std_table_module,
   &ts_std_termcap_module,
+  &ts_std_termart_module,
   &ts_std_terminfo_module,
   &ts_std_terminal_module,
   &ts_std_termios_module,

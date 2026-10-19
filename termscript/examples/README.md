@@ -1,5 +1,9 @@
 # Examples
 
+- **Runnable:** `MyApp.ta` builds a plain block-letter logo; `Welcome.ta` builds
+  a centered, framed truecolor welcome card using [`std.termart`](../stdlib/termart/README.md).
+  Run either with `termscript path/to/sample.ta`.
+
 - **Runnable:** `core.tsc` exercises the currently implemented function,
   expression, import and entry-point subset.
 - **Runnable:** [`../../xw3m/`](../../xw3m/) contains a terminal browser prototype

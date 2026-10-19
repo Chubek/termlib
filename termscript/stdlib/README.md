@@ -243,3 +243,8 @@ payloads remain owned by their handle destructors. Install or reset
 the process-wide allocator before creating VMs, while no other thread
 is creating buffers. The standard library links the C++ runtime for
 `std.shell`; the standalone Termscript runtime remains C-only.
+## Terminal art
+
+[`std.termart`](termart/README.md) creates block-letter logos, multiline frames,
+centered art and explicit truecolor strings. Runnable `.ta` samples are in
+`../examples/MyApp.ta` and `../examples/Welcome.ta`.

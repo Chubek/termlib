@@ -480,6 +480,19 @@ if(BUILD_TESTING)
     add_executable(test_termscript_new_stdlib tests/test_termscript_new_stdlib.c)
     target_link_libraries(test_termscript_new_stdlib PRIVATE termscript_stdlib)
     add_test(NAME termscript_new_stdlib COMMAND test_termscript_new_stdlib)
+    add_executable(test_termscript_termart tests/test_termscript_termart.c)
+    target_link_libraries(test_termscript_termart PRIVATE termscript_stdlib)
+    add_test(NAME termscript_termart COMMAND test_termscript_termart)
+    foreach(art_source IN ITEMS tests/termscript_termart.tsc termscript/examples/MyApp.ta termscript/examples/Welcome.ta)
+      get_filename_component(art_name ${art_source} NAME_WE)
+      add_test(NAME ${art_name}_backends COMMAND ${CMAKE_COMMAND}
+        -DDRIVER=$<TARGET_FILE:termscript-driver>
+        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/${art_source}
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/${art_name}-backend-test
+        -DNATIVE=${TERMSCRIPT_NATIVE} -DJITERATI=${TERMSCRIPT_JITERATI}
+        "-DMARKER=[+][---]+[+]"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/termscript_backends.cmake)
+    endforeach()
     add_executable(test_termscript_fs_view tests/test_termscript_fs_view.c)
     target_link_libraries(test_termscript_fs_view PRIVATE termscript_stdlib)
     add_test(NAME termscript_fs_view COMMAND test_termscript_fs_view)

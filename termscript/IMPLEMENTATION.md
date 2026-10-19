@@ -107,7 +107,7 @@ write-indexing/slices/method protocols, optional/result propagation, defer, sche
 substantial additional library APIs. Those are **not implemented**. Do not
 describe parsing a simple type annotation as a type checker.
 
-The registry currently contains 91 native modules. Additional implemented
+The registry currently contains 92 native modules. Additional implemented
 modules are documented in `stdlib/new-modules.md`, `stdlib/parser-modules.md`
 and `stdlib/device-modules.md`, with infrastructure modules documented in
 `stdlib/infrastructure-modules.md`; the preexisting modules keep
@@ -313,7 +313,7 @@ prefix/DESTDIR handling. Its native builder retains its own atomic output and
 install-path policy; external CMake builds/installers follow CMake's semantics,
 not a promised sandbox or automatic dependency solver.
 
-All 91 native modules (including aliases) have real per-adapter CMake archive
+All 92 native modules (including aliases) have real per-adapter CMake archive
 targets and Termakfiles; `common` adds a helper archive, and `gen`/`q` install real
 headers/generator inputs without fake binaries. The full stdlib manifest installs
 the runtime/dependency closure. Individual component installs require that base

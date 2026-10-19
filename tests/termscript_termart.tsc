@@ -1,0 +1,10 @@
+use termart
+
+if termart.frame("hi") != "+----+\n| hi |\n+----+" { G:die("frame") }
+if termart.center("a\nbb", 4) != " a  \n bb " { G:die("center") }
+if termart.banner("a") != termart.banner("A") { G:die("case folding") }
+if termart.banner("") != "" { G:die("empty banner") }
+if termart.banner(".", "*") != "     \n     \n     \n     \n     \n     \n  *  " { G:die("bitmap") }
+print(termart.frame(termart.banner("ART 42!"), 0))
+print(termart.color("RGB", 1, 20, 255))
+print("termart OK")

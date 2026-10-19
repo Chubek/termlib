@@ -1,8 +1,9 @@
 schema: 1
-native_module_count: 91
+native_module_count: 92
 registry: ts_stdlib.c
 companion_layout: "<name>/<name>.tsc"
 new_modules:
+  - termart
   - datagram
   - gapbuffer
   - memory

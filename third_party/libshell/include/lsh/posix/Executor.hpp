@@ -338,23 +338,15 @@ private:
         }
 
         parent_close_child_ends(channels);
-        pid_t live_pid = pid;
-        ChildCleanup cleanup {std::span<pid_t>(&live_pid, 1)};
         ExecutionReport report;
         report.pid = static_cast<int>(pid);
         std::uint64_t stdout_bytes = 0;
         std::uint64_t stderr_bytes = 0;
         const PumpOutcome outcome = pump_channels(channels, has_deadline, deadline, cancel_token_, &stdout_bytes, &stderr_bytes);
-        const int pump_errno = errno;
         if (outcome != PumpOutcome::completed) {
             ::kill(pid, SIGKILL);
         }
         const ExitStatus status = reap(pid, has_deadline, deadline, cancel_token_);
-        live_pid = -1;
-        if (outcome == PumpOutcome::failed) {
-            errno = pump_errno;
-            return failure(ErrorCode::io_error, std::string("capture read failed: ") + std::strerror(errno));
-        }
         report.status = status;
         if (outcome == PumpOutcome::completed) {
             report.bytes_stdout = stdout_bytes;
@@ -372,9 +364,9 @@ private:
     // ---- external pipeline with real OS pipes ----
     Result<ExecutionReport> run_external_pipeline(std::vector<ExecSpec> specs, PipefailPolicy pipefail, bool merge_stderr) {
         const std::size_t count = specs.size();
-        std::vector<Pipe> pipes(count - 1);
+        std::vector<std::array<int, 2>> pipes(count - 1);
         for (std::size_t index = 0; index + 1 < count; ++index) {
-            if (!pipes[index].open()) {
+            if (::pipe(pipes[index].data()) < 0) {
                 return failure(ErrorCode::io_error, std::string("cannot create a pipeline pipe: ") + std::strerror(errno));
             }
         }
@@ -407,7 +399,6 @@ private:
         }
 
         std::vector<pid_t> pids(count, -1);
-        ChildCleanup cleanup {pids};
         for (std::size_t index = 0; index < count; ++index) {
             std::vector<std::string> argv_storage = specs[index].argv;
             std::vector<const char*> argv_c;
@@ -465,7 +456,8 @@ private:
                 // leaks into the exec'd image; a leaked write end would keep a
                 // sibling's capture pipe open forever.
                 for (std::size_t stage = 0; stage + 1 < count; ++stage) {
-                    pipes[stage].close();
+                    ::close(pipes[stage][0]);
+                    ::close(pipes[stage][1]);
                 }
                 if (head_input->dup_fd > 2) {
                     ::close(head_input->dup_fd);
@@ -503,11 +495,18 @@ private:
         // Parent: drop every child-bound descriptor. The capture write ends must
         // go too, or the pump never sees EOF.
         for (std::size_t stage = 0; stage + 1 < count; ++stage) {
-            pipes[stage].close();
+            ::close(pipes[stage][0]);
+            ::close(pipes[stage][1]);
         }
         auto release = [](Channel& channel) {
-            close_fd(channel.dup_fd);
-            close_fd(channel.pipe_write);
+            if (channel.dup_fd > 2) {
+                ::close(channel.dup_fd);
+                channel.dup_fd = -1;
+            }
+            if (channel.pipe_write >= 0) {
+                ::close(channel.pipe_write);
+                channel.pipe_write = -1;
+            }
         };
         release(*head_input);
         release(*tail_output);
@@ -530,7 +529,6 @@ private:
             }
         }
         const PumpOutcome outcome = pump_targets(targets, has_deadline, deadline, cancel_token_);
-        const int pump_errno = errno;
         if (outcome != PumpOutcome::completed) {
             for (const pid_t pid : pids) {
                 if (pid > 0) {
@@ -546,11 +544,6 @@ private:
             // Reap each stage with the same deadline and cancellation semantics
             // as a single process, so an unresponsive stage cannot hang the shell.
             report.pipeline_statuses.push_back(reap(pids[index], has_deadline, deadline, cancel_token_));
-            pids[index] = -1;
-        }
-        if (outcome == PumpOutcome::failed) {
-            errno = pump_errno;
-            return failure(ErrorCode::io_error, std::string("capture read failed: ") + std::strerror(errno));
         }
         report.bytes_stdout = stdout_bytes;
         report.bytes_stderr = stderr_bytes;
@@ -667,7 +660,7 @@ private:
                 if (redirection->mode == RedirectMode::read) {
                     mode = std::ios_base::in;
                 }
-                stream->open(redirection_path(spec, *redirection->target.file), mode);
+                stream->open(*redirection->target.file, mode);
                 if (!stream->is_open()) {
                     return failure(ErrorCode::io_error, "cannot open redirection target", *redirection->target.file);
                 }
@@ -711,7 +704,7 @@ private:
                 break;
             case StdioTargetKind::file: {
                 auto stream = std::make_shared<std::ifstream>();
-                stream->open(redirection_path(spec, *redirection->target.file), std::ios_base::in);
+                stream->open(*redirection->target.file, std::ios_base::in);
                 if (!stream->is_open()) {
                     return failure(ErrorCode::io_error, "cannot open redirection target", *redirection->target.file);
                 }

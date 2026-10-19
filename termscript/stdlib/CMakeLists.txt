@@ -26,7 +26,7 @@ set(TS_STDLIB_MODULES
   sched screen shell signal socket stream style syntax table termcap terminfo test text_search theme
   terminal termios toml tui utf8 verbatim vterm widget word_motion yaml drm poll x11 compositor emulator
   gapbuffer piecetable memory persian_script set stdio datagram procfs sysfs crdt
-  input font_shape shm mqueue grammar peg evdev uvdev wayland index multiplex protocols
+  input font_shape shm mqueue grammar peg evdev uvdev wayland index multiplex protocols termart
 )
 
 set(TS_STDLIB_COMMON_SOURCES

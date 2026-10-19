@@ -22,7 +22,6 @@
 #include <memory>
 #include <poll.h>
 #include <signal.h>
-#include <span>
 #include <string>
 #include <string_view>
 #include <sys/resource.h>
@@ -207,67 +206,6 @@ private:
 
 // ---- channel materialization ----------------------------------------------
 
-// Owned descriptors must not overlap the child's standard streams. Preserve
-// errno through cleanup so callers can report the operation that failed.
-inline void close_fd(int& fd) noexcept {
-    const int saved = errno;
-    if (fd >= 0) {
-        ::close(fd);
-        fd = -1;
-    }
-    errno = saved;
-}
-
-inline int above_stdio(int fd) {
-    if (fd < 0 || fd > 2) {
-        return fd;
-    }
-    const int copy = ::fcntl(fd, F_DUPFD_CLOEXEC, 3);
-    const int saved = errno;
-    ::close(fd);
-    errno = saved;
-    return copy;
-}
-
-struct Pipe {
-    std::array<int, 2> fds {-1, -1};
-    Pipe() = default;
-    Pipe(const Pipe&) = delete;
-    Pipe& operator=(const Pipe&) = delete;
-    ~Pipe() { close(); }
-    int& operator[](std::size_t index) { return fds[index]; }
-    void close() noexcept { for (int& fd : fds) close_fd(fd); }
-
-    bool open() {
-        if (::pipe(fds.data()) < 0) return false;
-        for (int& fd : fds) {
-            fd = above_stdio(fd);
-            if (fd < 0 || ::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) return false;
-        }
-        return true;
-    }
-};
-
-// Armed before launching, disarmed per reaped child. Handles partial launch,
-// early diagnostic returns and exceptions without abandoning live children.
-struct ChildCleanup {
-    std::span<pid_t> pids;
-    ~ChildCleanup() {
-        const int saved = errno;
-        for (const pid_t pid : pids) if (pid > 0) ::kill(pid, SIGKILL);
-        for (const pid_t pid : pids) {
-            if (pid > 0) while (::waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
-        }
-        errno = saved;
-    }
-};
-
-inline std::string redirection_path(const ExecSpec& spec, const std::string& path) {
-    std::filesystem::path resolved(path);
-    if (resolved.is_relative() && spec.cwd) resolved = std::filesystem::path(*spec.cwd) / resolved;
-    return resolved.string();
-}
-
 // One materialized stream for an external process. Either a concrete fd to
 // dup2 onto the stream (file/null/fd/inherit/close), or a pump pipe whose read
 // end the parent drains into `sink` (memory/sinklet output targets, or a Reader
@@ -279,25 +217,6 @@ struct Channel {
     bool close_stream {false}; // `>&-`: detach the stream in the child
     std::shared_ptr<Writer> sink;
     RedirectMode mode {RedirectMode::truncate};
-
-    Channel() = default;
-    Channel(const Channel&) = delete;
-    Channel& operator=(const Channel&) = delete;
-    Channel(Channel&& other) noexcept { *this = std::move(other); }
-    Channel& operator=(Channel&& other) noexcept {
-        if (this != &other) {
-            close();
-            dup_fd = std::exchange(other.dup_fd, -1);
-            pipe_write = std::exchange(other.pipe_write, -1);
-            pipe_read = std::exchange(other.pipe_read, -1);
-            close_stream = other.close_stream;
-            sink = std::move(other.sink);
-            mode = other.mode;
-        }
-        return *this;
-    }
-    ~Channel() { close(); }
-    void close() noexcept { close_fd(dup_fd); close_fd(pipe_write); close_fd(pipe_read); }
 };
 
 [[nodiscard]] inline int open_flags_for(RedirectMode mode, RedirectStream stream) {
@@ -359,22 +278,21 @@ inline Result<Channel> materialize_channel(
         channel.close_stream = true;
         break;
     case StdioTargetKind::null_device:
-        channel.dup_fd = above_stdio(::open("/dev/null", (stream == RedirectStream::stdin_stream ? O_RDONLY : O_WRONLY) | O_CLOEXEC));
+        channel.dup_fd = ::open("/dev/null", stream == RedirectStream::stdin_stream ? O_RDONLY : O_WRONLY);
         if (channel.dup_fd < 0) {
             return failure(ErrorCode::io_error, "cannot open /dev/null");
         }
         break;
     case StdioTargetKind::file: {
-        const std::string path = redirection_path(spec, *redirection->target.file);
-        channel.dup_fd = above_stdio(::open(path.c_str(), open_flags_for(channel.mode, stream) | O_CLOEXEC, 0666));
+        const std::string& path = *redirection->target.file;
+        channel.dup_fd = ::open(path.c_str(), open_flags_for(channel.mode, stream) | O_CLOEXEC, 0666);
         if (channel.dup_fd < 0) {
             return failure(ErrorCode::io_error, std::string("cannot open redirection target: ") + std::strerror(errno), path);
         }
         break;
     }
     case StdioTargetKind::fd:
-        channel.dup_fd = ::fcntl(*redirection->target.fd, F_DUPFD_CLOEXEC, 3);
-        if (channel.dup_fd < 0) return failure(ErrorCode::io_error, "cannot duplicate redirection descriptor");
+        channel.dup_fd = *redirection->target.fd;
         break;
     case StdioTargetKind::memory:
     case StdioTargetKind::sinklet:
@@ -405,25 +323,27 @@ inline Result<Channel> materialize_channel(
                     return rewound.error();
                 }
                 owned.push_back(std::make_shared<TempFile>(std::move(temp).value()));
-                channel.dup_fd = ::fcntl(owned.back()->fd(), F_DUPFD_CLOEXEC, 3);
+                channel.dup_fd = ::dup(owned.back()->fd());
                 if (channel.dup_fd < 0) {
                     return failure(ErrorCode::io_error, "cannot duplicate redirected input");
                 }
                 break;
             }
-            channel.dup_fd = above_stdio(::open("/dev/null", O_RDONLY | O_CLOEXEC));
+            channel.dup_fd = ::open("/dev/null", O_RDONLY);
             if (channel.dup_fd < 0) {
                 return failure(ErrorCode::io_error, "cannot open /dev/null");
             }
             break;
         }
         {
-            Pipe pipe;
-            if (!pipe.open()) {
+            int fds[2] = {-1, -1};
+            if (::pipe(fds) < 0) {
                 return failure(ErrorCode::io_error, "cannot create a capture pipe");
             }
-            channel.pipe_write = std::exchange(pipe[1], -1);
-            channel.pipe_read = std::exchange(pipe[0], -1);
+            ::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+            ::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+            channel.pipe_write = fds[1];
+            channel.pipe_read = fds[0];
             if (kind == StdioTargetKind::memory) {
                 channel.sink = redirection->target.memory;
             } else {
@@ -479,7 +399,15 @@ inline void child_apply_streams(Channels& channels, bool merge_stderr, const std
     // Close materialized originals and pipe ends so they do not leak into exec.
     for (int stream = 0; stream < 3; ++stream) {
         Channel& channel = channels[static_cast<std::size_t>(stream)];
-        channel.close();
+        if (channel.dup_fd > 2) {
+            ::close(channel.dup_fd);
+        }
+        if (channel.pipe_write >= 0) {
+            ::close(channel.pipe_write);
+        }
+        if (channel.pipe_read >= 0) {
+            ::close(channel.pipe_read);
+        }
     }
 }
 
@@ -508,8 +436,14 @@ inline void build_child_environment(const std::vector<EnvVar>& environment, std:
 // Parent closes its copies of child-bound fds; keeps pump read ends.
 inline void parent_close_child_ends(Channels& channels) {
     for (Channel& channel : channels) {
-        close_fd(channel.dup_fd);
-        close_fd(channel.pipe_write);
+        if (channel.dup_fd > 2) {
+            ::close(channel.dup_fd);
+            channel.dup_fd = -1;
+        }
+        if (channel.pipe_write >= 0) {
+            ::close(channel.pipe_write);
+            channel.pipe_write = -1;
+        }
     }
 }
 
@@ -592,7 +526,6 @@ enum class PumpOutcome {
     completed,     // every target reached EOF
     deadline,      // the wall-clock deadline expired
     canceled,      // the cancel token fired
-    failed,        // poll/read failed; errno is preserved
 };
 
 // Drains every target concurrently until all of them reach EOF, the deadline
@@ -625,12 +558,11 @@ inline PumpOutcome pump_targets(
             fds[index].revents = 0;
         }
 
-        int timeout = cancel ? 50 : -1;
+        int timeout = -1;
         if (has_deadline) {
             const auto now = std::chrono::steady_clock::now();
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-            const int bound = remaining > 0 ? static_cast<int>(remaining) : 0;
-            timeout = timeout >= 0 ? std::min(timeout, bound) : bound;
+            timeout = remaining > 0 ? static_cast<int>(remaining) : 0;
         }
 
         const int ready = ::poll(fds.data(), static_cast<nfds_t>(fds.size()), timeout);
@@ -638,24 +570,17 @@ inline PumpOutcome pump_targets(
             if (errno == EINTR) {
                 continue;
             }
-            return PumpOutcome::failed;
+            return PumpOutcome::completed;
         }
         if (ready == 0) {
-            continue;
+            return PumpOutcome::deadline;
         }
 
-        // Walk backwards: removal swaps the last target into the retired slot.
-        // Its poll snapshot has already been processed, so indices stay valid.
-        for (std::size_t cursor = fds.size(); cursor > 0; --cursor) {
-            const std::size_t index = cursor - 1;
+        for (std::size_t index = 0; index < fds.size(); ++index) {
             if ((fds[index].revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
                 continue;
             }
             const ssize_t count = ::read(fds[index].fd, buffer, sizeof(buffer));
-            if (count < 0) {
-                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-                return PumpOutcome::failed;
-            }
             if (count > 0) {
                 if (targets[index].writer) {
                     (void)targets[index].writer->write(std::string_view(buffer, static_cast<std::size_t>(count)));
@@ -665,7 +590,8 @@ inline PumpOutcome pump_targets(
                 }
                 continue;
             }
-            // EOF: retire this borrowed target; its Channel still owns the fd.
+            // EOF or error: retire the target.
+            ::close(fds[index].fd);
             targets[index] = targets.back();
             targets.pop_back();
         }
@@ -715,13 +641,13 @@ inline ExitStatus reap(
         if (cancel && cancel->load()) {
             canceled = true;
             ::kill(pid, SIGKILL);
-            while (::waitpid(pid, &wstatus, 0) < 0 && errno == EINTR) {}
+            ::waitpid(pid, &wstatus, 0);
             break;
         }
         if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
             timed_out = true;
             ::kill(pid, SIGKILL);
-            while (::waitpid(pid, &wstatus, 0) < 0 && errno == EINTR) {}
+            ::waitpid(pid, &wstatus, 0);
             break;
         }
         const pid_t waited = ::waitpid(pid, &wstatus, WNOHANG);

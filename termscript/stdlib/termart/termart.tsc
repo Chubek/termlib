@@ -1,0 +1,2 @@
+# Native, side-effect-free terminal art builders.
+const termart_m = G:load("std.termart") or G:die("std.termart missing");

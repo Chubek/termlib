@@ -1,0 +1,6 @@
+# Runnable: termscript termscript/examples/MyApp.ta
+use termart
+
+let logo = termart.banner("MyApp", "#")
+let card = termart.frame(logo + "\n\n            SMALL TOOLS. BIG IDEAS.", 2)
+print(card)

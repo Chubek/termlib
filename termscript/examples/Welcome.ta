@@ -1,0 +1,8 @@
+# Runnable: termscript termscript/examples/Welcome.ta
+# Color is explicit; omit the final color call for plain redirected output.
+use termart
+
+let heading = termart.banner("Welcome", "*")
+let caption = termart.center("MAKE SOMETHING WORTH PRINTING", 41)
+let card = termart.frame(heading + "\n\n" + caption, 2)
+print(termart.color(card, 80, 200, 240))
