@@ -26,7 +26,7 @@ set(TS_STDLIB_MODULES
   sched screen shell signal socket stream style syntax table termcap terminfo test text_search theme
   terminal termios toml tui utf8 verbatim vterm widget word_motion yaml drm poll x11 compositor emulator
   gapbuffer piecetable memory persian_script set stdio datagram procfs sysfs crdt
-  input font_shape shm mqueue grammar peg evdev uvdev wayland index multiplex protocols termart
+  input font_shape shm mqueue grammar peg evdev uvdev wayland index multiplex protocols termart ffi
 )
 
 set(TS_STDLIB_COMMON_SOURCES
@@ -41,12 +41,12 @@ set(TS_STDLIB_COMMON_SOURCES
 )
 set(TS_STDLIB_SOURCES ${TS_STDLIB_COMMON_SOURCES} ts_stdlib.c http/fetch.cpp)
 foreach (m IN LISTS TS_STDLIB_MODULES)
-  if(m STREQUAL "shell")
+  if(m STREQUAL "shell" OR m STREQUAL "ffi")
     list(APPEND TS_STDLIB_SOURCES ${m}/${m}.cpp)
   else()
     list(APPEND TS_STDLIB_SOURCES ${m}/${m}.c)
   endif()
-  if(m STREQUAL "shell")
+  if(m STREQUAL "shell" OR m STREQUAL "ffi")
     set(module_source "${m}/${m}.cpp")
   else()
     set(module_source "${m}/${m}.c")
@@ -218,6 +218,7 @@ target_include_directories(termscript_stdlib PRIVATE
   ${TS_STDLIB_TOML_INC}
   ${TS_STDLIB_ISOCLINE_INC}
   ${CMAKE_CURRENT_BINARY_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/dynalo/include
 )
 target_include_directories(termscript_stdlib SYSTEM PRIVATE
   ${TS_STDLIB_LIBSHELL}/include
@@ -319,6 +320,8 @@ foreach(m IN LISTS TS_STDLIB_MODULES ITEMS font_discovery stylesheet)
     set(adapter_source css/css.c)
   elseif(m STREQUAL "shell")
     set(adapter_source shell/shell.cpp)
+  elseif(m STREQUAL "ffi")
+    set(adapter_source ffi/ffi.cpp)
   else()
     set(adapter_source "${m}/${m}.c")
   endif()

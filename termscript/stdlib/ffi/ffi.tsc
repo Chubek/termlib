@@ -1,0 +1,3 @@
+# ffi.tsc -- Termscript companion for std.ffi.
+const ffi_m = G:load("std.ffi") or G:die("std.ffi missing");
+ffi_m

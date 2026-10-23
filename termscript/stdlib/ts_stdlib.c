@@ -24,6 +24,7 @@ static const TS_Module *const stdlib_modules[] = {
   &ts_std_emulator_module,
   &ts_std_env_module,
   &ts_std_exec_module,
+  &ts_std_ffi_module,
   &ts_std_expect_module,
   &ts_std_font_module,
   &ts_std_font_discovery_module,

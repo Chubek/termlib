@@ -37,6 +37,7 @@
 #include "emulator/emulator.h"
 #include "env/env.h"
 #include "exec/exec.h"
+#include "ffi/ffi.h"
 #include "expect/expect.h"
 #include "font/font.h"
 #include "font_discovery/font_discovery.h"
@@ -119,7 +120,7 @@ extern "C"
 #endif
 
 /* Number of bundled native modules. */
-#define TS_STDLIB_NMODULES 92
+#define TS_STDLIB_NMODULES 93
 /* Metadata is borrowed immutable static storage; out-of-range returns NULL. */
 size_t ts_stdlib_module_count (void);
 const TS_Module *ts_stdlib_module_at (size_t index);
