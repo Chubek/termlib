@@ -1,0 +1,2 @@
+# keyremap.tsc -- companion for std.keyremap.
+const keyremap_m = G:load("std.keyremap") or G:die("std.keyremap missing");

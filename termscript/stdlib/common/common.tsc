@@ -1,0 +1,7 @@
+# Shared Termscript helpers.  Keep this companion dependency free so it can be
+# imported by every standard module.
+const common = G:load("std.common") or G:die("std.common missing");
+
+const identity = fn(value) value;
+const is_some = fn(value) value != nil;
+const is_none = fn(value) value == nil;

@@ -1,0 +1,1 @@
+const termarch_m = G:load("std.termarch") or G:die("std.termarch missing");

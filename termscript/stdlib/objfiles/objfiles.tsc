@@ -1,0 +1,2 @@
+# Utilities for inspecting and loading native object files.
+const objfiles_m = G:Import("std.objfiles");

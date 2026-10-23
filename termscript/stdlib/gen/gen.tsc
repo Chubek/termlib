@@ -1,0 +1,4 @@
+# Convenience constructors for generated container modules.
+const gen = G:load("std.gen") or G:die("std.gen missing");
+const empty = fn() [];
+const from = fn(value) value;
