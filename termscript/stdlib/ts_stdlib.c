@@ -32,6 +32,7 @@ static const TS_Module *const stdlib_modules[] = {
   &ts_std_glob_module,
   &ts_std_html_module,
   &ts_std_http_module,
+  &ts_std_openai_module,
   &ts_std_io_module,
   &ts_std_ipc_module,
   &ts_std_json_module,

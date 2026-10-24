@@ -45,6 +45,7 @@
 #include "glob/glob.h"
 #include "html/html.h"
 #include "http/http.h"
+#include "openai/openai.h"
 #include "io/io.h"
 #include "ipc/ipc.h"
 #include "json/json.h"
@@ -120,7 +121,7 @@ extern "C"
 #endif
 
 /* Number of bundled native modules. */
-#define TS_STDLIB_NMODULES 93
+#define TS_STDLIB_NMODULES 94
 /* Metadata is borrowed immutable static storage; out-of-range returns NULL. */
 size_t ts_stdlib_module_count (void);
 const TS_Module *ts_stdlib_module_at (size_t index);

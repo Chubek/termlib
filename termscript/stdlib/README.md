@@ -248,3 +248,8 @@ is creating buffers. The standard library links the C++ runtime for
 [`std.termart`](termart/README.md) creates block-letter logos, multiline frames,
 centered art and explicit truecolor strings. Runnable `.ta` samples are in
 `../examples/MyApp.ta` and `../examples/Welcome.ta`.
+# OpenAI API
+
+`std.openai` wraps the vendored openaipp client for Responses, tool-call agent
+workflows, Chat Completions, and model listing. See [openai/README.md](openai/README.md)
+for configuration, ownership, error handling, and offline test instructions.

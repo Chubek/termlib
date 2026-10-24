@@ -1,0 +1,2 @@
+# Loading the companion never sends requests or reads credentials.
+const openai = G:load("std.openai") or G:die("std.openai missing");

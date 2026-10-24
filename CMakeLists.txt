@@ -330,6 +330,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_termscript_cpp PRIVATE termscript_standalone)
   add_test(NAME termscript_cpp COMMAND test_termscript_cpp)
   if(TARGET termscript_stdlib)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND)
+      add_test(NAME termscript_openai COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_termscript_openai.py
+        $<TARGET_FILE:termscript-driver> vm c)
+    endif()
     add_executable(test_termscript_browser_core tests/test_termscript_browser_core.c)
     target_link_libraries(test_termscript_browser_core PRIVATE termscript_stdlib)
     add_test(NAME termscript_browser_core COMMAND test_termscript_browser_core)

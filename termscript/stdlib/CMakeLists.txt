@@ -26,7 +26,7 @@ set(TS_STDLIB_MODULES
   sched screen shell signal socket stream style syntax table termcap terminfo test text_search theme
   terminal termios toml tui utf8 verbatim vterm widget word_motion yaml drm poll x11 compositor emulator
   gapbuffer piecetable memory persian_script set stdio datagram procfs sysfs crdt
-  input font_shape shm mqueue grammar peg evdev uvdev wayland index multiplex protocols termart ffi
+  input font_shape shm mqueue grammar peg evdev uvdev wayland index multiplex protocols termart ffi openai
 )
 
 set(TS_STDLIB_COMMON_SOURCES
@@ -41,12 +41,12 @@ set(TS_STDLIB_COMMON_SOURCES
 )
 set(TS_STDLIB_SOURCES ${TS_STDLIB_COMMON_SOURCES} ts_stdlib.c http/fetch.cpp)
 foreach (m IN LISTS TS_STDLIB_MODULES)
-  if(m STREQUAL "shell" OR m STREQUAL "ffi")
+  if(m STREQUAL "shell" OR m STREQUAL "ffi" OR m STREQUAL "openai")
     list(APPEND TS_STDLIB_SOURCES ${m}/${m}.cpp)
   else()
     list(APPEND TS_STDLIB_SOURCES ${m}/${m}.c)
   endif()
-  if(m STREQUAL "shell" OR m STREQUAL "ffi")
+  if(m STREQUAL "shell" OR m STREQUAL "ffi" OR m STREQUAL "openai")
     set(module_source "${m}/${m}.cpp")
   else()
     set(module_source "${m}/${m}.c")
@@ -90,6 +90,14 @@ set(TS_STDLIB_SHELL_PARSER
 if(NOT EXISTS "${TS_STDLIB_TOML_C}" OR NOT EXISTS "${TS_STDLIB_ISOCLINE_C}")
   message(FATAL_ERROR "Termscript stdlib requires the bundled tomlc99/isocline sources")
 endif()
+foreach(required IN ITEMS
+    "openaipp/include/OpenAI.hpp"
+    "openaipp/third_party/MetaTk/DSLtk/DSLtk.hpp"
+    "cpp-httplib/httplib.h")
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/${required}")
+    message(FATAL_ERROR "Termscript std.openai requires bundled third_party/${required}")
+  endif()
+endforeach()
 if(NOT EXISTS "${TS_STDLIB_LIBSHELL}/include/LibShell-Posix.hpp"
    OR NOT EXISTS "${TS_STDLIB_LIBSHELL}/cli/libsh-parse.cpp")
   message(FATAL_ERROR "Termscript std.shell requires the bundled libshell sources")
@@ -221,6 +229,9 @@ target_include_directories(termscript_stdlib PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/dynalo/include
 )
 target_include_directories(termscript_stdlib SYSTEM PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/openaipp/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/openaipp/third_party
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/cpp-httplib
   ${TS_STDLIB_LIBSHELL}/include
   ${TS_STDLIB_LIBSHELL}/cli)
 # Reuse isocline's MIT-licensed CSS color-name data, rather than maintaining
@@ -322,6 +333,8 @@ foreach(m IN LISTS TS_STDLIB_MODULES ITEMS font_discovery stylesheet)
     set(adapter_source shell/shell.cpp)
   elseif(m STREQUAL "ffi")
     set(adapter_source ffi/ffi.cpp)
+  elseif(m STREQUAL "openai")
+    set(adapter_source openai/openai.cpp)
   else()
     set(adapter_source "${m}/${m}.c")
   endif()
@@ -403,6 +416,8 @@ install(FILES shell/README.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/shell)
 install(FILES http/README.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/http)
+install(FILES openai/README.md
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib/openai)
 install(FILES emulator-backends.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib)
 install(FILES new-modules.md parser-modules.md device-modules.md infrastructure-modules.md MANIFEST.yaml DESTINATION ${CMAKE_INSTALL_DOCDIR}/stdlib)
